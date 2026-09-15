@@ -1,0 +1,24 @@
+# Build outputs
+*.dll
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+
+# Visual Studio
+.vs/
+Debug/
+Release/
+x86/
+x64/
+
+# Runtime/debug files
+HRO_Fishing_UI.log
+*.log
+
+# Local client files
+client/
+data/
+*.grf
+*.exe
