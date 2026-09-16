@@ -84,6 +84,9 @@ static int card_name_table_attempted_;
 static BYTE* item_info_table_;
 static DWORD item_info_table_size_;
 static int item_info_table_attempted_;
+static BYTE* english_item_info_table_;
+static DWORD english_item_info_table_size_;
+static int english_item_info_table_attempted_;
 static BYTE* item_description_table_;
 static DWORD item_description_table_size_;
 static int item_description_table_attempted_;
@@ -1505,27 +1508,34 @@ static BOOL find_item_resource(int id, char* output, int output_length) {
 }
 
 static BOOL find_item_description_lua(int id, char* output, int output_length) {
-	char unused_resource[8];
-	/* This also performs the one-time itemInfo load. */
-	find_item_resource(id, unused_resource, sizeof(unused_resource));
-	if (!item_info_table_ || output_length < 2) return FALSE;
-	const char* data = (const char*)item_info_table_;
+	if (!english_item_info_table_attempted_) {
+		english_item_info_table_attempted_ = 1;
+		/* Recipe descriptions must come from the client's English System folder.
+		 * The generic data GRFs commonly contain the original Korean table. */
+		if (load_client_file("SystemEN\\LuaFiles514\\itemInfo.lua",
+			&english_item_info_table_, &english_item_info_table_size_))
+			log_line("English SystemEN itemInfo loaded for recipe descriptions.");
+		else
+			log_line("English SystemEN itemInfo was not found for recipe descriptions.");
+	}
+	if (!english_item_info_table_ || output_length < 2) return FALSE;
+	const char* data = (const char*)english_item_info_table_;
 	DWORD position = 0;
-	while (position < item_info_table_size_) {
+	while (position < english_item_info_table_size_) {
 		if (data[position] != '[') { ++position; continue; }
 		DWORD cursor = position + 1; int found_id = 0; BOOL has_digits = FALSE;
-		while (cursor < item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
+		while (cursor < english_item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
 		char id_quote = 0;
-		if (cursor < item_info_table_size_ && (data[cursor] == '"' || data[cursor] == '\'')) id_quote = data[cursor++];
-		while (cursor < item_info_table_size_ && data[cursor] >= '0' && data[cursor] <= '9') {
+		if (cursor < english_item_info_table_size_ && (data[cursor] == '"' || data[cursor] == '\'')) id_quote = data[cursor++];
+		while (cursor < english_item_info_table_size_ && data[cursor] >= '0' && data[cursor] <= '9') {
 			has_digits = TRUE; found_id = found_id * 10 + data[cursor] - '0'; ++cursor;
 		}
-		if (id_quote && cursor < item_info_table_size_ && data[cursor] == id_quote) ++cursor;
-		while (cursor < item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
-		if (!has_digits || cursor >= item_info_table_size_ || data[cursor] != ']') { ++position; continue; }
+		if (id_quote && cursor < english_item_info_table_size_ && data[cursor] == id_quote) ++cursor;
+		while (cursor < english_item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
+		if (!has_digits || cursor >= english_item_info_table_size_ || data[cursor] != ']') { ++position; continue; }
 		if (found_id != id) { position = cursor + 1; continue; }
 		DWORD block_end = cursor + 1;
-		while (block_end < item_info_table_size_ && block_end < cursor + 16384) {
+		while (block_end < english_item_info_table_size_ && block_end < cursor + 16384) {
 			if (data[block_end] == '[' && block_end > 0 && data[block_end - 1] == '\n') break;
 			++block_end;
 		}
@@ -1569,11 +1579,10 @@ static BOOL find_legacy_item_description(int id, char* output, int output_length
 	if (!item_description_table_attempted_) {
 		item_description_table_attempted_ = 1;
 		static const char* candidates[] = {
-			"data\\idnum2itemdesctable.txt",
 			"SystemEN\\idnum2itemdesctable.txt",
-			"data\\luafiles514\\lua files\\datainfo\\idnum2itemdesctable.txt"
+			"SystemEN\\LuaFiles514\\idnum2itemdesctable.txt"
 		};
-		for (int i = 0; i < 3 && !item_description_table_; ++i)
+		for (int i = 0; i < 2 && !item_description_table_; ++i)
 			load_client_file(candidates[i], &item_description_table_, &item_description_table_size_);
 	}
 	if (!item_description_table_) return FALSE;
