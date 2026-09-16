@@ -2,7 +2,7 @@
 
 The map-server remains authoritative. When the Chef NPC invokes `hrocookingbookopen`, it sends a short `HROCOOK` catalog stream containing the categories, recipes, learned state, success rate, failure behavior, and current ingredient counts.
 
-The client extension suppresses these control messages from chat and renders them in a 720x500 recipe-book window. The window loads dish and ingredient icons from the client's configured GRFs through `DATA.ini`.
+The client extension suppresses these control messages from chat and renders them in a 720x500 open-book window. Dish and ingredient resources are resolved by item ID from the client's `itemInfo.lua`/`itemInfo.lub`, then their BMPs are loaded from the configured GRFs through `DATA.ini`.
 
 ## Test checklist
 

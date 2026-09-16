@@ -81,6 +81,9 @@ static int storage_tail_len_;
 static BYTE* card_name_table_;
 static DWORD card_name_table_size_;
 static int card_name_table_attempted_;
+static BYTE* item_info_table_;
+static DWORD item_info_table_size_;
+static int item_info_table_attempted_;
 static int card_chat_bytes_to_discard_;
 
 typedef struct CookingIngredient {
@@ -1414,11 +1417,72 @@ static HBITMAP load_collection_image(const char* resource_name) {
 	return NULL;
 }
 
-static HBITMAP load_item_image(const char* resource_name) {
-	if (!resource_name || !resource_name[0]) return NULL;
-	char wanted[256], root[MAX_PATH], path[MAX_PATH], grf_name[128];
+static BOOL find_item_resource(int id, char* output, int output_length) {
+	if (!item_info_table_attempted_) {
+		item_info_table_attempted_ = 1;
+		static const char* candidates[] = {
+			"SystemEN\\LuaFiles514\\itemInfo.lua",
+			"SystemEN\\LuaFiles514\\itemInfo.lub",
+			"data\\luafiles514\\lua files\\datainfo\\iteminfo.lua",
+			"data\\luafiles514\\lua files\\datainfo\\iteminfo.lub",
+			"data\\luafiles514\\lua files\\iteminfo.lua",
+			"data\\luafiles514\\lua files\\iteminfo.lub"
+		};
+		for (int i = 0; i < 6 && !item_info_table_; ++i)
+			load_client_file(candidates[i], &item_info_table_, &item_info_table_size_);
+		log_line(item_info_table_ ? "itemInfo table loaded for cooking icons." :
+			"itemInfo table was not found; cooking icons will use Aegis names.");
+	}
+	if (!item_info_table_ || output_length < 2) return FALSE;
+	const char* data = (const char*)item_info_table_;
+	DWORD position = 0;
+	while (position < item_info_table_size_) {
+		if (data[position] != '[') { ++position; continue; }
+		DWORD cursor = position + 1; int found_id = 0; BOOL has_digits = FALSE;
+		while (cursor < item_info_table_size_ && data[cursor] >= '0' && data[cursor] <= '9') {
+			has_digits = TRUE; found_id = found_id * 10 + data[cursor] - '0'; ++cursor;
+		}
+		if (!has_digits || cursor >= item_info_table_size_ || data[cursor] != ']') { ++position; continue; }
+		if (found_id != id) { position = cursor + 1; continue; }
+		DWORD block_end = cursor + 1;
+		while (block_end < item_info_table_size_ && block_end < cursor + 8192) {
+			if (data[block_end] == '[' && (block_end == 0 || data[block_end - 1] == '\n')) break;
+			++block_end;
+		}
+		static const char field[] = "identifiedResourceName";
+		for (DWORD field_pos = cursor + 1; field_pos + sizeof(field) - 1 < block_end; ++field_pos) {
+			if (memcmp(data + field_pos, field, sizeof(field) - 1) != 0) continue;
+			if (field_pos > cursor + 1) {
+				char previous = data[field_pos - 1];
+				if ((previous >= 'A' && previous <= 'Z') || (previous >= 'a' && previous <= 'z') || previous == '_') continue;
+			}
+			DWORD value = field_pos + sizeof(field) - 1;
+			while (value < block_end && data[value] != '"' && data[value] != '\'') ++value;
+			if (value >= block_end) return FALSE;
+			char quote = data[value++]; DWORD end = value;
+			while (end < block_end && data[end] != quote) ++end;
+			if (end <= value || end >= block_end) return FALSE;
+			int length = (int)(end - value); if (length >= output_length) length = output_length - 1;
+			byte_copy(output, data + value, length); output[length] = 0; return TRUE;
+		}
+		return FALSE;
+	}
+	return FALSE;
+}
+
+static HBITMAP load_item_image(int item_id, const char* fallback_resource) {
+	char resource_utf8[128] = {0}, resource[256] = {0};
+	if (!find_item_resource(item_id, resource_utf8, sizeof(resource_utf8)))
+		lstrcpynA(resource_utf8, fallback_resource ? fallback_resource : "", sizeof(resource_utf8));
+	if (!resource_utf8[0]) return NULL;
+	WCHAR wide_resource[128];
+	if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, resource_utf8, -1, wide_resource, 128) &&
+		WideCharToMultiByte(949, 0, wide_resource, -1, resource, sizeof(resource), NULL, NULL) == 0)
+		lstrcpynA(resource, resource_utf8, sizeof(resource));
+	if (!resource[0]) lstrcpynA(resource, resource_utf8, sizeof(resource));
+	char wanted[320], root[MAX_PATH], path[MAX_PATH], grf_name[128];
 	lstrcpyA(wanted, "data\\texture\\\xC0\xAF\xC0\xFA\xC0\xCE\xC5\xCD\xC6\xE4\xC0\xCC\xBD\xBA\\item\\");
-	lstrcatA(wanted, resource_name);
+	lstrcatA(wanted, resource);
 	lstrcatA(wanted, ".bmp");
 	GetModuleFileNameA(NULL, root, MAX_PATH);
 	char* slash = strrchr(root, '\\');
@@ -1437,11 +1501,11 @@ static HBITMAP load_item_image(const char* resource_name) {
 	return NULL;
 }
 
-static void draw_item_image(HDC dc, RECT area, HBITMAP* image, int* attempted, const char* resource_name) {
+static void draw_item_image(HDC dc, RECT area, HBITMAP* image, int* attempted, int item_id, const char* resource_name) {
 	if (!*attempted && cooking_image_load_budget_ > 0) {
 		--cooking_image_load_budget_;
 		*attempted = 1;
-		*image = load_item_image(resource_name);
+		*image = load_item_image(item_id, resource_name);
 	}
 	if (!*image) {
 		RECT placeholder = {area.left + 5, area.top + 5, area.right - 5, area.bottom - 5};
@@ -2203,7 +2267,33 @@ static void reset_cooking_page(void) {
 static void draw_cooking_book_window(HDC dc, RECT area) {
 	cooking_image_load_budget_ = cooking_first_paint_ ? 0 : 2;
 	cooking_first_paint_ = 0;
-	draw_panel(dc, area);
+	RECT backdrop = {0, 0, area.right, area.bottom};
+	fill_color(dc, backdrop, RGB(8, 29, 40));
+	RECT cover_shadow = {12, 47, 708, 491};
+	fill_round(dc, cover_shadow, 13, RGB(63, 38, 23));
+	RECT cover = {9, 43, 711, 487};
+	fill_round(dc, cover, 13, RGB(126, 75, 38));
+	RECT left_page = {19, 49, 354, 482};
+	RECT right_page = {366, 49, 701, 482};
+	fill_round(dc, left_page, 9, RGB(244, 231, 194));
+	fill_round(dc, right_page, 9, RGB(244, 231, 194));
+	/* Page-edge lines and a shaded gutter make the overlay read as an open book
+	 * without requiring an additional client texture. */
+	for (int line = 0; line < 4; ++line) {
+		RECT left_edge = {347 + line, 56, 351 + line, 476};
+		RECT right_edge = {366 + line, 56, 370 + line, 476};
+		fill_color(dc, left_edge, RGB(196 - line * 10, 165 - line * 8, 112 - line * 5));
+		fill_color(dc, right_edge, RGB(157 + line * 10, 126 + line * 8, 82 + line * 5));
+	}
+	RECT gutter = {354, 54, 366, 478};
+	fill_color(dc, gutter, RGB(111, 72, 42));
+	RECT gutter_light = {358, 56, 362, 476};
+	fill_color(dc, gutter_light, RGB(194, 157, 100));
+	HPEN page_pen = CreatePen(PS_SOLID, 1, RGB(205, 179, 126));
+	HPEN previous_pen = (HPEN)SelectObject(dc, page_pen);
+	MoveToEx(dc, 25, 474, NULL); LineTo(dc, 346, 474);
+	MoveToEx(dc, 374, 474, NULL); LineTo(dc, 695, 474);
+	SelectObject(dc, previous_pen); DeleteObject(page_pen);
 	SetBkMode(dc, TRANSPARENT);
 	HFONT title_font = CreateFontA(-21, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
 		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
@@ -2241,9 +2331,11 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 		CookingRecipe* recipe = &cooking_recipes_[index];
 		int row = slot, top = 95 + row * 58;
 		RECT cell = {28, top, 328, top + 51};
-		fill_round(dc, cell, 7, index == cooking_selected_ ? RGB(225, 190, 111) : RGB(229, 216, 181));
+		fill_round(dc, cell, 5, index == cooking_selected_ ? RGB(225, 190, 111) : RGB(239, 226, 190));
+		RECT recipe_rule = {84, top + 47, 318, top + 48};
+		fill_color(dc, recipe_rule, RGB(210, 185, 137));
 		RECT icon = {36, top + 5, 77, top + 46};
-		draw_item_image(dc, icon, &recipe->image, &recipe->image_attempted, recipe->resource_name);
+		draw_item_image(dc, icon, &recipe->image, &recipe->image_attempted, recipe->product_id, recipe->resource_name);
 		SetTextColor(dc, recipe->unlocked ? RGB(62, 42, 25) : RGB(119, 101, 76));
 		RECT name = {86, top + 6, 316, top + 28};
 		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &name, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -2266,11 +2358,10 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 	RECT page_area = {130, 448, 226, 476}; SetTextColor(dc, RGB(77, 53, 31));
 	DrawTextA(dc, page, -1, &page_area, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-	RECT detail = {358, 94, 695, 476}; fill_round(dc, detail, 10, RGB(235, 222, 188));
 	if (cooking_recipe_count_ > 0 && cooking_selected_ < cooking_recipe_count_) {
 		CookingRecipe* recipe = &cooking_recipes_[cooking_selected_];
 		RECT product_icon = {378, 111, 450, 183};
-		draw_item_image(dc, product_icon, &recipe->image, &recipe->image_attempted, recipe->resource_name);
+		draw_item_image(dc, product_icon, &recipe->image, &recipe->image_attempted, recipe->product_id, recipe->resource_name);
 		SelectObject(dc, title_font); SetTextColor(dc, RGB(71, 43, 23));
 		RECT product_name = {462, 109, 679, 155};
 		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &product_name, DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_WORD_ELLIPSIS);
@@ -2286,7 +2377,7 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 			CookingIngredient* ingredient = &recipe->ingredients[i];
 			int top = 235 + i * 36;
 			RECT ingredient_icon = {380, top, 410, top + 30};
-			draw_item_image(dc, ingredient_icon, &ingredient->image, &ingredient->image_attempted, ingredient->resource_name);
+			draw_item_image(dc, ingredient_icon, &ingredient->image, &ingredient->image_attempted, ingredient->item_id, ingredient->resource_name);
 			RECT ingredient_name = {418, top, 595, top + 30};
 			SetTextColor(dc, ingredient->owned >= ingredient->required ? RGB(37, 118, 73) : RGB(174, 54, 45));
 			DrawTextA(dc, ingredient->name, -1, &ingredient_name, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
