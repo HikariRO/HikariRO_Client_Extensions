@@ -111,6 +111,8 @@ static int cooking_recipe_count_, cooking_expected_, cooking_category_count_;
 static int cooking_selected_, cooking_category_ = -1, cooking_page_;
 static int cooking_category_dropdown_, cooking_category_scroll_;
 static int cooking_first_paint_ = 1, cooking_image_load_budget_;
+static HBITMAP cooking_title_icon_;
+static int cooking_title_icon_attempted_;
 static BYTE cooking_tail_[512];
 static int cooking_tail_len_;
 
@@ -2337,8 +2339,10 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 	HFONT small_font = CreateFontA(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
 		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
 	HFONT old_font = (HFONT)SelectObject(dc, title_font);
-	SetTextColor(dc, RGB(246, 222, 164));
-	RECT title = {35, 27, 344, 53}; DrawTextA(dc, "Recipe Book", -1, &title, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	RECT title_icon = {102, 24, 134, 56};
+	draw_item_image(dc, title_icon, &cooking_title_icon_, &cooking_title_icon_attempted_, 5026, "Chef_Hat");
+	SetTextColor(dc, RGB(74, 43, 25));
+	RECT title = {140, 27, 314, 53}; DrawTextA(dc, "Recipe Book", -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 	RECT close_box = {660, 23, 682, 45}; fill_round(dc, close_box, 5, RGB(91, 38, 31));
 	HBRUSH close_border = CreateSolidBrush(RGB(190, 141, 63));
 	FrameRect(dc, &close_box, close_border); DeleteObject(close_border);
@@ -2365,19 +2369,21 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 		if (index < 0) break;
 		CookingRecipe* recipe = &cooking_recipes_[index];
 		int row = slot, top = 95 + row * 55;
-		RECT cell = {37, top, 342, top + 48};
+		RECT cell = {38, top, 341, top + 48};
 		fill_round(dc, cell, 5, index == cooking_selected_ ? RGB(225, 190, 111) : RGB(239, 226, 190));
-		RECT recipe_rule = {83, top + 44, 332, top + 45};
+		HBRUSH cell_border = CreateSolidBrush(index == cooking_selected_ ? RGB(177, 92, 25) : RGB(210, 185, 137));
+		FrameRect(dc, &cell, cell_border); DeleteObject(cell_border);
+		RECT recipe_rule = {84, top + 44, 330, top + 45};
 		fill_color(dc, recipe_rule, RGB(210, 185, 137));
-		RECT icon = {42, top + 4, 77, top + 43};
+		RECT icon = {44, top + 4, 77, top + 43};
 		draw_item_image(dc, icon, &recipe->image, &recipe->image_attempted, recipe->product_id, recipe->resource_name);
 		SetTextColor(dc, recipe->unlocked ? RGB(62, 42, 25) : RGB(119, 101, 76));
-		RECT name = {84, top + 4, 332, top + 25};
+		RECT name = {84, top + 4, 330, top + 25};
 		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &name, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 		SelectObject(dc, small_font);
 		char state[64]; wsprintfA(state, recipe->unlocked ? "%d.%02d%% success" : "Recipe not learned",
 			recipe->success_rate / 100, recipe->success_rate % 100);
-		RECT state_area = {84, top + 26, 332, top + 43};
+		RECT state_area = {84, top + 26, 330, top + 43};
 		SetTextColor(dc, recipe->unlocked ? RGB(39, 116, 81) : RGB(143, 65, 57));
 		DrawTextA(dc, state, -1, &state_area, DT_LEFT | DT_SINGLELINE);
 		SelectObject(dc, normal_font);
@@ -2395,15 +2401,15 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 
 	if (cooking_recipe_count_ > 0 && cooking_selected_ < cooking_recipe_count_) {
 		CookingRecipe* recipe = &cooking_recipes_[cooking_selected_];
-		RECT product_name = {398, 50, 670, 92};
+		RECT product_name = {395, 50, 673, 86};
 		SelectObject(dc, title_font); SetTextColor(dc, RGB(71, 43, 23));
 		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &product_name,
 			DT_CENTER | DT_VCENTER | DT_WORDBREAK);
-		RECT product_icon = {390, 101, 470, 191};
+		RECT product_icon = {493, 88, 573, 168};
 		draw_recipe_collection(dc, product_icon, recipe);
 		SelectObject(dc, small_font); char line[128];
 		wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
-		RECT info = {480, 155, 680, 184}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+		RECT info = {395, 174, 673, 196}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 		RECT separator = {395, 205, 673, 207}; fill_color(dc, separator, RGB(188, 154, 96));
 		SelectObject(dc, normal_font); SetTextColor(dc, RGB(76, 47, 25));
 		RECT ingredients_title = {398, 214, 670, 235}; DrawTextA(dc, "Required ingredients", -1, &ingredients_title, DT_LEFT | DT_SINGLELINE);
@@ -2508,7 +2514,7 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 		int pages = (visible_cooking_count() + 5) / 6; if (pages < 1) pages = 1;
 		if (x >= 36 && x <= 108 && y >= 435 && y <= 462 && cooking_page_ > 0) --cooking_page_;
 		else if (x >= 270 && x <= 342 && y >= 435 && y <= 462 && cooking_page_ + 1 < pages) ++cooking_page_;
-		else if (x >= 37 && x <= 342 && y >= 95 && y < 425) {
+		else if (x >= 38 && x <= 341 && y >= 95 && y < 425) {
 			int slot = (y - 95) / 55; int index = visible_cooking_index(cooking_page_ * 6 + slot);
 			if (index >= 0) cooking_selected_ = index;
 		}
