@@ -100,6 +100,8 @@ typedef struct CookingRecipe {
 	int ingredient_count;
 	HBITMAP image;
 	int image_attempted;
+	HBITMAP collection_image;
+	int collection_attempted;
 } CookingRecipe;
 
 static CookingRecipe cooking_recipes_[256];
@@ -107,6 +109,7 @@ static char cooking_categories_[64][32];
 static volatile LONG cooking_book_open_;
 static int cooking_recipe_count_, cooking_expected_, cooking_category_count_;
 static int cooking_selected_, cooking_category_ = -1, cooking_page_;
+static int cooking_category_dropdown_, cooking_category_scroll_;
 static int cooking_first_paint_ = 1, cooking_image_load_budget_;
 static BYTE cooking_tail_[512];
 static int cooking_tail_len_;
@@ -275,6 +278,7 @@ static void parse_cooking_payload(const char* payload) {
 			cooking_expected_ = recipes;
 			cooking_selected_ = cooking_page_ = 0;
 			cooking_category_ = -1;
+			cooking_category_dropdown_ = cooking_category_scroll_ = 0;
 			cooking_first_paint_ = 1;
 			ZeroMemory(cooking_categories_, sizeof(cooking_categories_));
 			InterlockedExchange(&cooking_book_open_, 1);
@@ -1521,6 +1525,34 @@ static void draw_item_image(HDC dc, RECT area, HBITMAP* image, int* attempted, i
 	SelectObject(source, previous); DeleteDC(source);
 }
 
+static void draw_recipe_collection(HDC dc, RECT area, CookingRecipe* recipe) {
+	if (!recipe->collection_attempted && cooking_image_load_budget_ > 0) {
+		--cooking_image_load_budget_;
+		recipe->collection_attempted = 1;
+		char resource[128] = {0};
+		if (!find_item_resource(recipe->product_id, resource, sizeof(resource)))
+			lstrcpynA(resource, recipe->resource_name, sizeof(resource));
+		recipe->collection_image = load_collection_image(resource);
+	}
+	if (!recipe->collection_image) {
+		draw_item_image(dc, area, &recipe->image, &recipe->image_attempted,
+			recipe->product_id, recipe->resource_name);
+		return;
+	}
+	BITMAP bitmap; GetObject(recipe->collection_image, sizeof(bitmap), &bitmap);
+	int maximum_width = area.right - area.left;
+	int maximum_height = area.bottom - area.top;
+	int width = bitmap.bmWidth, height = bitmap.bmHeight;
+	if (width > maximum_width) { height = height * maximum_width / width; width = maximum_width; }
+	if (height > maximum_height) { width = width * maximum_height / height; height = maximum_height; }
+	int x = area.left + (maximum_width - width) / 2;
+	int y = area.top + (maximum_height - height) / 2;
+	HDC source = CreateCompatibleDC(dc);
+	HBITMAP previous = (HBITMAP)SelectObject(source, recipe->collection_image);
+	TransparentBlt(dc, x, y, width, height, source, 0, 0, bitmap.bmWidth, bitmap.bmHeight, RGB(255, 0, 255));
+	SelectObject(source, previous); DeleteDC(source);
+}
+
 static HBITMAP load_album_background(void) {
 	char wanted[256], root[MAX_PATH], path[MAX_PATH], grf_name[128];
 	lstrcpyA(wanted, "data\\texture\\\xC0\xAF\xC0\xFA\xC0\xCE\xC5\xCD\xC6\xE4\xC0\xCC\xBD\xBA\\hro_fishing\\album_book.bmp");
@@ -2308,18 +2340,14 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 	SetTextColor(dc, RGB(255, 221, 216)); DrawTextA(dc, "X", -1, &close_box, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
 	SelectObject(dc, small_font);
-	int tab_count = cooking_category_count_ + 1;
-	int tab_width = tab_count > 0 ? 650 / tab_count : 100;
-	if (tab_width > 120) tab_width = 120;
-	for (int tab = 0; tab < tab_count; ++tab) {
-		int left = 25 + tab * tab_width;
-		RECT box = {left, 53, left + tab_width - 5, 80};
-		BOOL selected = cooking_category_ == tab - 1;
-		fill_round(dc, box, 5, selected ? RGB(208, 166, 75) : RGB(42, 91, 106));
-		SetTextColor(dc, selected ? RGB(55, 37, 21) : RGB(232, 241, 238));
-		DrawTextA(dc, tab == 0 ? "All" : cooking_categories_[tab - 1], -1, &box,
-			DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-	}
+	RECT category_box = {28, 55, 328, 82};
+	fill_round(dc, category_box, 5, RGB(218, 178, 91));
+	SetTextColor(dc, RGB(64, 42, 23));
+	RECT category_label = {40, 55, 292, 82};
+	const char* selected_category = cooking_category_ < 0 ? "All recipes" : cooking_categories_[cooking_category_];
+	DrawTextA(dc, selected_category, -1, &category_label, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+	RECT category_arrow = {296, 55, 323, 82};
+	DrawTextA(dc, cooking_category_dropdown_ ? "^" : "v", -1, &category_arrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
 	int visible = visible_cooking_count();
 	int pages = visible > 0 ? (visible + 5) / 6 : 1;
@@ -2360,8 +2388,8 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 
 	if (cooking_recipe_count_ > 0 && cooking_selected_ < cooking_recipe_count_) {
 		CookingRecipe* recipe = &cooking_recipes_[cooking_selected_];
-		RECT product_icon = {378, 111, 450, 183};
-		draw_item_image(dc, product_icon, &recipe->image, &recipe->image_attempted, recipe->product_id, recipe->resource_name);
+		RECT product_icon = {375, 102, 456, 187};
+		draw_recipe_collection(dc, product_icon, recipe);
 		SelectObject(dc, title_font); SetTextColor(dc, RGB(71, 43, 23));
 		RECT product_name = {462, 109, 679, 155};
 		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &product_name, DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_WORD_ELLIPSIS);
@@ -2388,6 +2416,35 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 		SetTextColor(dc, recipe->consume_failure ? RGB(155, 58, 47) : RGB(43, 111, 73));
 		DrawTextA(dc, recipe->consume_failure ? "Failure consumes ingredients." : "Failure preserves ingredients.", -1, &failure, DT_LEFT | DT_SINGLELINE);
 	}
+	if (cooking_category_dropdown_) {
+		const int total_options = cooking_category_count_ + 1;
+		const int visible_options = total_options < 10 ? total_options : 10;
+		RECT dropdown_shadow = {31, 87, 332, 91 + visible_options * 28};
+		fill_round(dc, dropdown_shadow, 5, RGB(91, 57, 31));
+		RECT dropdown = {28, 84, 328, 88 + visible_options * 28};
+		fill_round(dc, dropdown, 5, RGB(247, 235, 202));
+		SelectObject(dc, small_font);
+		for (int row = 0; row < visible_options; ++row) {
+			int option = cooking_category_scroll_ + row;
+			if (option >= total_options) break;
+			RECT option_box = {31, 87 + row * 28, 315, 114 + row * 28};
+			if (option - 1 == cooking_category_) fill_color(dc, option_box, RGB(225, 190, 111));
+			SetTextColor(dc, RGB(65, 43, 25));
+			RECT option_text = {40, 87 + row * 28, 306, 114 + row * 28};
+			DrawTextA(dc, option == 0 ? "All recipes" : cooking_categories_[option - 1], -1,
+				&option_text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+		}
+		if (total_options > visible_options) {
+			RECT scroll_track = {316, 89, 324, 84 + visible_options * 28};
+			fill_round(dc, scroll_track, 3, RGB(211, 190, 148));
+			int thumb_height = (scroll_track.bottom - scroll_track.top) * visible_options / total_options;
+			int maximum_scroll = total_options - visible_options;
+			int thumb_top = scroll_track.top + (scroll_track.bottom - scroll_track.top - thumb_height) *
+				cooking_category_scroll_ / maximum_scroll;
+			RECT thumb = {316, thumb_top, 324, thumb_top + thumb_height};
+			fill_round(dc, thumb, 3, RGB(139, 91, 46));
+		}
+	}
 	SelectObject(dc, old_font); DeleteObject(title_font); DeleteObject(normal_font); DeleteObject(small_font);
 }
 
@@ -2398,15 +2455,46 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 		return 0;
 	}
 	if (message == WM_KEYDOWN && w == VK_ESCAPE) {
+		if (cooking_category_dropdown_) {
+			cooking_category_dropdown_ = 0; InvalidateRect(window, NULL, FALSE); return 0;
+		}
 		InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0;
+	}
+	if (message == WM_MOUSEWHEEL && cooking_category_dropdown_) {
+		const int total_options = cooking_category_count_ + 1;
+		const int visible_options = total_options < 10 ? total_options : 10;
+		const int maximum_scroll = total_options - visible_options;
+		if (GET_WHEEL_DELTA_WPARAM(w) < 0 && cooking_category_scroll_ < maximum_scroll)
+			++cooking_category_scroll_;
+		else if (GET_WHEEL_DELTA_WPARAM(w) > 0 && cooking_category_scroll_ > 0)
+			--cooking_category_scroll_;
+		InvalidateRect(window, NULL, FALSE); return 0;
 	}
 	if (message == WM_LBUTTONDOWN) {
 		int x = LOWORD(l), y = HIWORD(l);
 		if (x >= 675 && y <= 47) { InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0; }
-		int tab_count = cooking_category_count_ + 1;
-		int tab_width = tab_count > 0 ? 650 / tab_count : 100; if (tab_width > 120) tab_width = 120;
-		if (y >= 53 && y <= 80 && x >= 25 && x < 25 + tab_count * tab_width) {
-			int tab = (x - 25) / tab_width; cooking_category_ = tab - 1; reset_cooking_page();
+		if (x >= 28 && x <= 328 && y >= 55 && y <= 82) {
+			cooking_category_dropdown_ = !cooking_category_dropdown_;
+			if (cooking_category_dropdown_) {
+				int selected_option = cooking_category_ + 1;
+				if (selected_option < cooking_category_scroll_) cooking_category_scroll_ = selected_option;
+				if (selected_option >= cooking_category_scroll_ + 10) cooking_category_scroll_ = selected_option - 9;
+			}
+			InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		if (cooking_category_dropdown_) {
+			const int total_options = cooking_category_count_ + 1;
+			const int visible_options = total_options < 10 ? total_options : 10;
+			if (x >= 28 && x <= 328 && y >= 84 && y < 88 + visible_options * 28) {
+				int row = (y - 87) / 28;
+				if (row < 0) row = 0;
+				int option = cooking_category_scroll_ + row;
+				if (option < total_options) {
+					cooking_category_ = option - 1; cooking_category_dropdown_ = 0; reset_cooking_page();
+				}
+				InvalidateRect(window, NULL, FALSE); return 0;
+			}
+			cooking_category_dropdown_ = 0;
 			InvalidateRect(window, NULL, FALSE); return 0;
 		}
 		int pages = (visible_cooking_count() + 5) / 6; if (pages < 1) pages = 1;
