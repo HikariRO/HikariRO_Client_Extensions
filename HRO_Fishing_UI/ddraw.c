@@ -84,6 +84,9 @@ static int card_name_table_attempted_;
 static BYTE* item_info_table_;
 static DWORD item_info_table_size_;
 static int item_info_table_attempted_;
+static BYTE* item_description_table_;
+static DWORD item_description_table_size_;
+static int item_description_table_attempted_;
 static int card_chat_bytes_to_discard_;
 
 typedef struct CookingIngredient {
@@ -1432,13 +1435,30 @@ static BOOL find_item_resource(int id, char* output, int output_length) {
 		static const char* candidates[] = {
 			"SystemEN\\LuaFiles514\\itemInfo.lua",
 			"SystemEN\\LuaFiles514\\itemInfo.lub",
+			"SystemEN\\LuaFiles514\\Lua Files\\Datainfo\\itemInfo.lua",
+			"SystemEN\\LuaFiles514\\Lua Files\\Datainfo\\itemInfo.lub",
+			"SystemEN\\LuaFiles514\\Lua Files\\itemInfo.lua",
+			"SystemEN\\LuaFiles514\\Lua Files\\itemInfo.lub",
+			"SystemEN\\itemInfo.lua",
+			"SystemEN\\itemInfo.lub",
 			"data\\luafiles514\\lua files\\datainfo\\iteminfo.lua",
 			"data\\luafiles514\\lua files\\datainfo\\iteminfo.lub",
 			"data\\luafiles514\\lua files\\iteminfo.lua",
-			"data\\luafiles514\\lua files\\iteminfo.lub"
+			"data\\luafiles514\\lua files\\iteminfo.lub",
+			"data\\lua files\\datainfo\\iteminfo.lua",
+			"data\\lua files\\datainfo\\iteminfo.lub"
 		};
-		for (int i = 0; i < 6 && !item_info_table_; ++i)
-			load_client_file(candidates[i], &item_info_table_, &item_info_table_size_);
+		for (int i = 0; i < 14 && !item_info_table_; ++i) {
+			BYTE* candidate = NULL; DWORD candidate_size = 0;
+			if (!load_client_file(candidates[i], &candidate, &candidate_size)) continue;
+			/* A compiled .lub may exist before a readable Lua source in another
+			 * client folder. Keep searching unless this candidate really contains
+			 * the itemInfo field names needed by the recipe book. */
+			if (strstr((const char*)candidate, "identifiedDescriptionName") ||
+				strstr((const char*)candidate, "identifiedResourceName")) {
+				item_info_table_ = candidate; item_info_table_size_ = candidate_size;
+			} else HeapFree(GetProcessHeap(), 0, candidate);
+		}
 		log_line(item_info_table_ ? "itemInfo table loaded for cooking icons." :
 			"itemInfo table was not found; cooking icons will use Aegis names.");
 	}
@@ -1448,9 +1468,14 @@ static BOOL find_item_resource(int id, char* output, int output_length) {
 	while (position < item_info_table_size_) {
 		if (data[position] != '[') { ++position; continue; }
 		DWORD cursor = position + 1; int found_id = 0; BOOL has_digits = FALSE;
+		while (cursor < item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
+		char id_quote = 0;
+		if (cursor < item_info_table_size_ && (data[cursor] == '"' || data[cursor] == '\'')) id_quote = data[cursor++];
 		while (cursor < item_info_table_size_ && data[cursor] >= '0' && data[cursor] <= '9') {
 			has_digits = TRUE; found_id = found_id * 10 + data[cursor] - '0'; ++cursor;
 		}
+		if (id_quote && cursor < item_info_table_size_ && data[cursor] == id_quote) ++cursor;
+		while (cursor < item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
 		if (!has_digits || cursor >= item_info_table_size_ || data[cursor] != ']') { ++position; continue; }
 		if (found_id != id) { position = cursor + 1; continue; }
 		DWORD block_end = cursor + 1;
@@ -1479,7 +1504,7 @@ static BOOL find_item_resource(int id, char* output, int output_length) {
 	return FALSE;
 }
 
-static BOOL find_item_description(int id, char* output, int output_length) {
+static BOOL find_item_description_lua(int id, char* output, int output_length) {
 	char unused_resource[8];
 	/* This also performs the one-time itemInfo load. */
 	find_item_resource(id, unused_resource, sizeof(unused_resource));
@@ -1489,9 +1514,14 @@ static BOOL find_item_description(int id, char* output, int output_length) {
 	while (position < item_info_table_size_) {
 		if (data[position] != '[') { ++position; continue; }
 		DWORD cursor = position + 1; int found_id = 0; BOOL has_digits = FALSE;
+		while (cursor < item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
+		char id_quote = 0;
+		if (cursor < item_info_table_size_ && (data[cursor] == '"' || data[cursor] == '\'')) id_quote = data[cursor++];
 		while (cursor < item_info_table_size_ && data[cursor] >= '0' && data[cursor] <= '9') {
 			has_digits = TRUE; found_id = found_id * 10 + data[cursor] - '0'; ++cursor;
 		}
+		if (id_quote && cursor < item_info_table_size_ && data[cursor] == id_quote) ++cursor;
+		while (cursor < item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
 		if (!has_digits || cursor >= item_info_table_size_ || data[cursor] != ']') { ++position; continue; }
 		if (found_id != id) { position = cursor + 1; continue; }
 		DWORD block_end = cursor + 1;
@@ -1533,6 +1563,58 @@ static BOOL find_item_description(int id, char* output, int output_length) {
 		return written > 0;
 	}
 	return FALSE;
+}
+
+static BOOL find_legacy_item_description(int id, char* output, int output_length) {
+	if (!item_description_table_attempted_) {
+		item_description_table_attempted_ = 1;
+		static const char* candidates[] = {
+			"data\\idnum2itemdesctable.txt",
+			"SystemEN\\idnum2itemdesctable.txt",
+			"data\\luafiles514\\lua files\\datainfo\\idnum2itemdesctable.txt"
+		};
+		for (int i = 0; i < 3 && !item_description_table_; ++i)
+			load_client_file(candidates[i], &item_description_table_, &item_description_table_size_);
+	}
+	if (!item_description_table_) return FALSE;
+	const char* data = (const char*)item_description_table_;
+	DWORD p = 0;
+	while (p < item_description_table_size_) {
+		while (p < item_description_table_size_ && (data[p] == '\r' || data[p] == '\n' || data[p] == ' ' || data[p] == '\t')) ++p;
+		int found_id = 0; BOOL digits = FALSE;
+		while (p < item_description_table_size_ && data[p] >= '0' && data[p] <= '9') {
+			digits = TRUE; found_id = found_id * 10 + data[p] - '0'; ++p;
+		}
+		if (!digits || p >= item_description_table_size_ || data[p] != '#') {
+			while (p < item_description_table_size_ && data[p] != '\n') ++p;
+			continue;
+		}
+		DWORD start = ++p, end = start;
+		while (end < item_description_table_size_ && data[end] != '#') ++end;
+		if (found_id == id && end > start) {
+			int written = 0;
+			for (DWORD source = start; source < end && written + 1 < output_length; ++source) {
+				if (data[source] == '^' && source + 6 < end) {
+					BOOL color = TRUE;
+					for (int digit = 1; digit <= 6; ++digit) {
+						char value = data[source + digit];
+						if (!((value >= '0' && value <= '9') || (value >= 'A' && value <= 'F') ||
+							(value >= 'a' && value <= 'f'))) { color = FALSE; break; }
+					}
+					if (color) { source += 6; continue; }
+				}
+				output[written++] = data[source] == '\t' ? ' ' : data[source];
+			}
+			output[written] = 0; return written > 0;
+		}
+		p = end < item_description_table_size_ ? end + 1 : end;
+	}
+	return FALSE;
+}
+
+static BOOL find_item_description(int id, char* output, int output_length) {
+	return find_item_description_lua(id, output, output_length) ||
+		find_legacy_item_description(id, output, output_length);
 }
 
 static HBITMAP load_item_image(int item_id, const char* fallback_resource) {
