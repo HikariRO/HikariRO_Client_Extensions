@@ -1519,9 +1519,17 @@ static void draw_item_image(HDC dc, RECT area, HBITMAP* image, int* attempted, i
 		return;
 	}
 	BITMAP bitmap; GetObject(*image, sizeof(bitmap), &bitmap);
-	int width = area.right - area.left, height = area.bottom - area.top;
+	int maximum_width = area.right - area.left, maximum_height = area.bottom - area.top;
+	int width = bitmap.bmWidth, height = bitmap.bmHeight;
+	/* Item BMPs are deliberately small. Never enlarge them: scaling a 24x24
+	 * icon to the full recipe-row slot produces the blocky result that the
+	 * collection artwork is intended to avoid. Only shrink oversized assets. */
+	if (width > maximum_width) { height = height * maximum_width / width; width = maximum_width; }
+	if (height > maximum_height) { width = width * maximum_height / height; height = maximum_height; }
+	int x = area.left + (maximum_width - width) / 2;
+	int y = area.top + (maximum_height - height) / 2;
 	HDC source = CreateCompatibleDC(dc); HBITMAP previous = (HBITMAP)SelectObject(source, *image);
-	TransparentBlt(dc, area.left, area.top, width, height, source, 0, 0, bitmap.bmWidth, bitmap.bmHeight, RGB(255, 0, 255));
+	TransparentBlt(dc, x, y, width, height, source, 0, 0, bitmap.bmWidth, bitmap.bmHeight, RGB(255, 0, 255));
 	SelectObject(source, previous); DeleteDC(source);
 }
 
