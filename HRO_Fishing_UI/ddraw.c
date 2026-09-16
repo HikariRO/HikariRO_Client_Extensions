@@ -1541,8 +1541,18 @@ static BOOL find_item_description_lua(int id, char* output, int output_length) {
 		}
 		static const char field[] = "identifiedDescriptionName";
 		DWORD field_position = cursor + 1;
-		while (field_position + sizeof(field) - 1 < block_end &&
-			memcmp(data + field_position, field, sizeof(field) - 1) != 0) ++field_position;
+		while (field_position + sizeof(field) - 1 < block_end) {
+			if (memcmp(data + field_position, field, sizeof(field) - 1) == 0) {
+				char previous = field_position > cursor + 1 ? data[field_position - 1] : 0;
+				char following = data[field_position + sizeof(field) - 1];
+				BOOL previous_is_identifier = (previous >= 'A' && previous <= 'Z') ||
+					(previous >= 'a' && previous <= 'z') || previous == '_';
+				BOOL following_is_identifier = (following >= 'A' && following <= 'Z') ||
+					(following >= 'a' && following <= 'z') || following == '_';
+				if (!previous_is_identifier && !following_is_identifier) break;
+			}
+			++field_position;
+		}
 		if (field_position + sizeof(field) - 1 >= block_end) return FALSE;
 		DWORD description_end = field_position + sizeof(field) - 1;
 		while (description_end < block_end && data[description_end] != '}') ++description_end;
