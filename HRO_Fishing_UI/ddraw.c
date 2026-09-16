@@ -2448,6 +2448,23 @@ static void reset_cooking_page(void) {
 	cooking_item_details_open_ = 0;
 }
 
+static void draw_client_item_description(HDC dc, const char* text, RECT* area) {
+	WCHAR wide[1024];
+	int converted;
+
+	if (!text || !text[0]) return;
+	converted = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1,
+		wide, sizeof(wide) / sizeof(wide[0]));
+	if (!converted)
+		converted = MultiByteToWideChar(949, 0, text, -1,
+			wide, sizeof(wide) / sizeof(wide[0]));
+	if (!converted)
+		converted = MultiByteToWideChar(CP_ACP, 0, text, -1,
+			wide, sizeof(wide) / sizeof(wide[0]));
+	if (converted)
+		DrawTextW(dc, wide, -1, area, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL);
+}
+
 static void draw_cooking_book_window(HDC dc, RECT area) {
 	cooking_image_load_budget_ = cooking_first_paint_ ? 0 : 2;
 	cooking_first_paint_ = 0;
@@ -2558,7 +2575,7 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 			RECT detail_separator = {405, 184, 663, 186}; fill_color(dc, detail_separator, RGB(188, 154, 96));
 			SelectObject(dc, small_font); SetTextColor(dc, RGB(68, 47, 31));
 			RECT description = {410, 198, 658, 402};
-			DrawTextA(dc, recipe->description, -1, &description, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL);
+			draw_client_item_description(dc, recipe->description, &description);
 			RECT back_button = {469, 414, 599, 441}; fill_round(dc, back_button, 6, RGB(151, 86, 42));
 			SetTextColor(dc, RGB(255, 241, 202));
 			DrawTextA(dc, "Back to recipe", -1, &back_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
