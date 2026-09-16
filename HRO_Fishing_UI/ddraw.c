@@ -102,6 +102,8 @@ typedef struct CookingRecipe {
 	int image_attempted;
 	HBITMAP collection_image;
 	int collection_attempted;
+	char description[768];
+	int description_attempted;
 } CookingRecipe;
 
 static CookingRecipe cooking_recipes_[256];
@@ -110,6 +112,7 @@ static volatile LONG cooking_book_open_;
 static int cooking_recipe_count_, cooking_expected_, cooking_category_count_;
 static int cooking_selected_, cooking_category_ = -1, cooking_page_;
 static int cooking_category_dropdown_, cooking_category_scroll_;
+static int cooking_item_details_open_;
 static int cooking_first_paint_ = 1, cooking_image_load_budget_;
 static HBITMAP cooking_title_icon_;
 static int cooking_title_icon_attempted_;
@@ -1476,6 +1479,62 @@ static BOOL find_item_resource(int id, char* output, int output_length) {
 	return FALSE;
 }
 
+static BOOL find_item_description(int id, char* output, int output_length) {
+	char unused_resource[8];
+	/* This also performs the one-time itemInfo load. */
+	find_item_resource(id, unused_resource, sizeof(unused_resource));
+	if (!item_info_table_ || output_length < 2) return FALSE;
+	const char* data = (const char*)item_info_table_;
+	DWORD position = 0;
+	while (position < item_info_table_size_) {
+		if (data[position] != '[') { ++position; continue; }
+		DWORD cursor = position + 1; int found_id = 0; BOOL has_digits = FALSE;
+		while (cursor < item_info_table_size_ && data[cursor] >= '0' && data[cursor] <= '9') {
+			has_digits = TRUE; found_id = found_id * 10 + data[cursor] - '0'; ++cursor;
+		}
+		if (!has_digits || cursor >= item_info_table_size_ || data[cursor] != ']') { ++position; continue; }
+		if (found_id != id) { position = cursor + 1; continue; }
+		DWORD block_end = cursor + 1;
+		while (block_end < item_info_table_size_ && block_end < cursor + 16384) {
+			if (data[block_end] == '[' && block_end > 0 && data[block_end - 1] == '\n') break;
+			++block_end;
+		}
+		static const char field[] = "identifiedDescriptionName";
+		DWORD field_position = cursor + 1;
+		while (field_position + sizeof(field) - 1 < block_end &&
+			memcmp(data + field_position, field, sizeof(field) - 1) != 0) ++field_position;
+		if (field_position + sizeof(field) - 1 >= block_end) return FALSE;
+		DWORD description_end = field_position + sizeof(field) - 1;
+		while (description_end < block_end && data[description_end] != '}') ++description_end;
+		int written = 0;
+		for (DWORD p = field_position + sizeof(field) - 1; p < description_end && written + 1 < output_length; ++p) {
+			if (data[p] != '"' && data[p] != '\'') continue;
+			char quote = data[p++];
+			if (written > 0 && written + 1 < output_length) output[written++] = '\n';
+			while (p < description_end && data[p] != quote && written + 1 < output_length) {
+				if (data[p] == '^' && p + 6 < description_end) {
+					BOOL color = TRUE;
+					for (int digit = 1; digit <= 6; ++digit) {
+						char value = data[p + digit];
+						if (!((value >= '0' && value <= '9') || (value >= 'A' && value <= 'F') ||
+							(value >= 'a' && value <= 'f'))) { color = FALSE; break; }
+					}
+					if (color) { p += 7; continue; }
+				}
+				if (data[p] == '\\' && p + 1 < description_end) {
+					if (data[p + 1] == 'n') { output[written++] = '\n'; p += 2; continue; }
+					if (data[p + 1] == '"' || data[p + 1] == '\\') ++p;
+				}
+				output[written++] = data[p++];
+			}
+		}
+		while (written > 0 && (output[written - 1] == '\n' || output[written - 1] == ' ')) --written;
+		output[written] = 0;
+		return written > 0;
+	}
+	return FALSE;
+}
+
 static HBITMAP load_item_image(int item_id, const char* fallback_resource) {
 	char resource_utf8[128] = {0}, resource[256] = {0};
 	if (!find_item_resource(item_id, resource_utf8, sizeof(resource_utf8)))
@@ -2304,6 +2363,7 @@ static void reset_cooking_page(void) {
 	cooking_page_ = 0;
 	cooking_selected_ = visible_cooking_index(0);
 	if (cooking_selected_ < 0) cooking_selected_ = 0;
+	cooking_item_details_open_ = 0;
 }
 
 static void draw_cooking_book_window(HDC dc, RECT area) {
@@ -2349,15 +2409,15 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 	SetTextColor(dc, RGB(255, 221, 216)); DrawTextA(dc, "X", -1, &close_box, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
 	SelectObject(dc, small_font);
-	RECT category_box = {38, 61, 341, 87};
+	RECT category_box = {45, 61, 334, 87};
 	fill_round(dc, category_box, 5, RGB(222, 199, 153));
 	HBRUSH category_border = CreateSolidBrush(RGB(154, 124, 78));
 	FrameRect(dc, &category_box, category_border); DeleteObject(category_border);
 	SetTextColor(dc, RGB(64, 42, 23));
-	RECT category_label = {48, 61, 306, 87};
+	RECT category_label = {55, 61, 299, 87};
 	const char* selected_category = cooking_category_ < 0 ? "All recipes" : cooking_categories_[cooking_category_];
 	DrawTextA(dc, selected_category, -1, &category_label, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-	RECT category_arrow = {308, 61, 335, 87};
+	RECT category_arrow = {301, 61, 328, 87};
 	DrawTextA(dc, cooking_category_dropdown_ ? "^" : "v", -1, &category_arrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
 	int visible = visible_cooking_count();
@@ -2369,93 +2429,115 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 		if (index < 0) break;
 		CookingRecipe* recipe = &cooking_recipes_[index];
 		int row = slot, top = 95 + row * 55;
-		RECT cell = {38, top, 341, top + 48};
+		RECT cell = {45, top, 334, top + 48};
 		fill_round(dc, cell, 5, index == cooking_selected_ ? RGB(225, 190, 111) : RGB(239, 226, 190));
 		HBRUSH cell_border = CreateSolidBrush(index == cooking_selected_ ? RGB(177, 92, 25) : RGB(210, 185, 137));
 		FrameRect(dc, &cell, cell_border); DeleteObject(cell_border);
-		RECT recipe_rule = {84, top + 44, 330, top + 45};
+		RECT recipe_rule = {91, top + 44, 323, top + 45};
 		fill_color(dc, recipe_rule, RGB(210, 185, 137));
-		RECT icon = {44, top + 4, 77, top + 43};
+		RECT icon = {51, top + 4, 84, top + 43};
 		draw_item_image(dc, icon, &recipe->image, &recipe->image_attempted, recipe->product_id, recipe->resource_name);
 		SetTextColor(dc, recipe->unlocked ? RGB(62, 42, 25) : RGB(119, 101, 76));
-		RECT name = {84, top + 4, 330, top + 25};
+		RECT name = {91, top + 4, 323, top + 25};
 		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &name, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 		SelectObject(dc, small_font);
 		char state[64]; wsprintfA(state, recipe->unlocked ? "%d.%02d%% success" : "Recipe not learned",
 			recipe->success_rate / 100, recipe->success_rate % 100);
-		RECT state_area = {84, top + 26, 330, top + 43};
+		RECT state_area = {91, top + 26, 323, top + 43};
 		SetTextColor(dc, recipe->unlocked ? RGB(39, 116, 81) : RGB(143, 65, 57));
 		DrawTextA(dc, state, -1, &state_area, DT_LEFT | DT_SINGLELINE);
 		SelectObject(dc, normal_font);
 	}
 
-	RECT previous = {36, 435, 108, 462}, next = {270, 435, 342, 462};
+	RECT previous = {45, 435, 117, 462}, next = {262, 435, 334, 462};
 	fill_round(dc, previous, 6, cooking_page_ > 0 ? RGB(42, 91, 106) : RGB(111, 124, 122));
 	fill_round(dc, next, 6, cooking_page_ + 1 < pages ? RGB(42, 91, 106) : RGB(111, 124, 122));
 	SelectObject(dc, small_font); SetTextColor(dc, RGB(241, 238, 218));
 	DrawTextA(dc, "Previous", -1, &previous, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	DrawTextA(dc, "Next", -1, &next, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 	char page[32]; wsprintfA(page, "%d / %d", cooking_page_ + 1, pages);
-	RECT page_area = {145, 435, 233, 462}; SetTextColor(dc, RGB(77, 53, 31));
+	RECT page_area = {145, 435, 234, 462}; SetTextColor(dc, RGB(77, 53, 31));
 	DrawTextA(dc, page, -1, &page_area, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
 	if (cooking_recipe_count_ > 0 && cooking_selected_ < cooking_recipe_count_) {
 		CookingRecipe* recipe = &cooking_recipes_[cooking_selected_];
-		RECT product_name = {395, 50, 673, 86};
+		RECT product_name = {405, 50, 663, 86};
 		SelectObject(dc, title_font); SetTextColor(dc, RGB(71, 43, 23));
 		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &product_name,
 			DT_CENTER | DT_VCENTER | DT_WORDBREAK);
-		RECT product_icon = {493, 88, 573, 168};
-		draw_recipe_collection(dc, product_icon, recipe);
-		SelectObject(dc, small_font); char line[128];
-		wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
-		RECT info = {395, 174, 673, 196}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-		RECT separator = {395, 205, 673, 207}; fill_color(dc, separator, RGB(188, 154, 96));
-		SelectObject(dc, normal_font); SetTextColor(dc, RGB(76, 47, 25));
-		RECT ingredients_title = {398, 214, 670, 235}; DrawTextA(dc, "Required ingredients", -1, &ingredients_title, DT_LEFT | DT_SINGLELINE);
-		SelectObject(dc, small_font);
-		int shown = recipe->ingredient_count > 6 ? 6 : recipe->ingredient_count;
-		for (int i = 0; i < shown; ++i) {
-			CookingIngredient* ingredient = &recipe->ingredients[i];
-			int top = 241 + i * 33;
-			RECT ingredient_icon = {400, top, 430, top + 30};
-			draw_item_image(dc, ingredient_icon, &ingredient->image, &ingredient->image_attempted, ingredient->item_id, ingredient->resource_name);
-			RECT ingredient_name = {438, top, 595, top + 30};
-			SetTextColor(dc, ingredient->owned >= ingredient->required ? RGB(37, 118, 73) : RGB(174, 54, 45));
-			DrawTextA(dc, ingredient->name, -1, &ingredient_name, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-			wsprintfA(line, "%d / %d", ingredient->owned, ingredient->required);
-			RECT amounts = {598, top, 673, top + 30}; DrawTextA(dc, line, -1, &amounts, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+		if (cooking_item_details_open_) {
+			if (!recipe->description_attempted) {
+				recipe->description_attempted = 1;
+				if (!find_item_description(recipe->product_id, recipe->description, sizeof(recipe->description)))
+					lstrcpynA(recipe->description, "No client item description is available.", sizeof(recipe->description));
+			}
+			RECT detail_icon = {494, 92, 574, 172};
+			draw_recipe_collection(dc, detail_icon, recipe);
+			RECT detail_separator = {405, 184, 663, 186}; fill_color(dc, detail_separator, RGB(188, 154, 96));
+			SelectObject(dc, small_font); SetTextColor(dc, RGB(68, 47, 31));
+			RECT description = {410, 198, 658, 402};
+			DrawTextA(dc, recipe->description, -1, &description, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL);
+			RECT back_button = {469, 414, 599, 441}; fill_round(dc, back_button, 6, RGB(151, 86, 42));
+			SetTextColor(dc, RGB(255, 241, 202));
+			DrawTextA(dc, "Back to recipe", -1, &back_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		} else {
+			RECT product_icon = {493, 88, 573, 168};
+			draw_recipe_collection(dc, product_icon, recipe);
+			SelectObject(dc, small_font); char line[128];
+			wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
+			RECT info = {405, 172, 663, 194}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			RECT details_button = {474, 197, 594, 220}; fill_round(dc, details_button, 5, RGB(222, 199, 153));
+			HBRUSH details_border = CreateSolidBrush(RGB(154, 124, 78));
+			FrameRect(dc, &details_button, details_border); DeleteObject(details_border);
+			SetTextColor(dc, RGB(74, 48, 29));
+			DrawTextA(dc, "View item details", -1, &details_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			RECT separator = {405, 228, 663, 230}; fill_color(dc, separator, RGB(188, 154, 96));
+			SelectObject(dc, normal_font); SetTextColor(dc, RGB(76, 47, 25));
+			RECT ingredients_title = {408, 237, 660, 258}; DrawTextA(dc, "Required ingredients", -1, &ingredients_title, DT_LEFT | DT_SINGLELINE);
+			SelectObject(dc, small_font);
+			int shown = recipe->ingredient_count > 6 ? 6 : recipe->ingredient_count;
+			for (int i = 0; i < shown; ++i) {
+				CookingIngredient* ingredient = &recipe->ingredients[i];
+				int top = 263 + i * 29;
+				RECT ingredient_icon = {410, top, 438, top + 27};
+				draw_item_image(dc, ingredient_icon, &ingredient->image, &ingredient->image_attempted, ingredient->item_id, ingredient->resource_name);
+				RECT ingredient_name = {446, top, 585, top + 27};
+				SetTextColor(dc, ingredient->owned >= ingredient->required ? RGB(37, 118, 73) : RGB(174, 54, 45));
+				DrawTextA(dc, ingredient->name, -1, &ingredient_name, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+				wsprintfA(line, "%d / %d", ingredient->owned, ingredient->required);
+				RECT amounts = {590, top, 660, top + 27}; DrawTextA(dc, line, -1, &amounts, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+			}
+			RECT failure = {408, 440, 660, 459};
+			SetTextColor(dc, recipe->consume_failure ? RGB(155, 58, 47) : RGB(43, 111, 73));
+			DrawTextA(dc, recipe->consume_failure ? "Failure consumes ingredients." : "Failure preserves ingredients.", -1, &failure, DT_LEFT | DT_SINGLELINE);
 		}
-		RECT failure = {398, 440, 673, 459};
-		SetTextColor(dc, recipe->consume_failure ? RGB(155, 58, 47) : RGB(43, 111, 73));
-		DrawTextA(dc, recipe->consume_failure ? "Failure consumes ingredients." : "Failure preserves ingredients.", -1, &failure, DT_LEFT | DT_SINGLELINE);
 	}
 	if (cooking_category_dropdown_) {
 		const int total_options = cooking_category_count_ + 1;
 		const int visible_options = total_options < 10 ? total_options : 10;
-		RECT dropdown_shadow = {41, 93, 345, 97 + visible_options * 28};
+		RECT dropdown_shadow = {48, 93, 338, 97 + visible_options * 28};
 		fill_round(dc, dropdown_shadow, 5, RGB(91, 57, 31));
-		RECT dropdown = {38, 90, 341, 94 + visible_options * 28};
+		RECT dropdown = {45, 90, 334, 94 + visible_options * 28};
 		fill_round(dc, dropdown, 5, RGB(247, 235, 202));
 		SelectObject(dc, small_font);
 		for (int row = 0; row < visible_options; ++row) {
 			int option = cooking_category_scroll_ + row;
 			if (option >= total_options) break;
-			RECT option_box = {41, 93 + row * 28, 328, 120 + row * 28};
+			RECT option_box = {48, 93 + row * 28, 321, 120 + row * 28};
 			if (option - 1 == cooking_category_) fill_color(dc, option_box, RGB(225, 190, 111));
 			SetTextColor(dc, RGB(65, 43, 25));
-			RECT option_text = {50, 93 + row * 28, 319, 120 + row * 28};
+			RECT option_text = {57, 93 + row * 28, 312, 120 + row * 28};
 			DrawTextA(dc, option == 0 ? "All recipes" : cooking_categories_[option - 1], -1,
 				&option_text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 		}
 		if (total_options > visible_options) {
-			RECT scroll_track = {329, 95, 337, 90 + visible_options * 28};
+			RECT scroll_track = {322, 95, 330, 90 + visible_options * 28};
 			fill_round(dc, scroll_track, 3, RGB(211, 190, 148));
 			int thumb_height = (scroll_track.bottom - scroll_track.top) * visible_options / total_options;
 			int maximum_scroll = total_options - visible_options;
 			int thumb_top = scroll_track.top + (scroll_track.bottom - scroll_track.top - thumb_height) *
 				cooking_category_scroll_ / maximum_scroll;
-			RECT thumb = {329, thumb_top, 337, thumb_top + thumb_height};
+			RECT thumb = {322, thumb_top, 330, thumb_top + thumb_height};
 			fill_round(dc, thumb, 3, RGB(139, 91, 46));
 		}
 	}
@@ -2472,6 +2554,9 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 		if (cooking_category_dropdown_) {
 			cooking_category_dropdown_ = 0; InvalidateRect(window, NULL, FALSE); return 0;
 		}
+		if (cooking_item_details_open_) {
+			cooking_item_details_open_ = 0; InvalidateRect(window, NULL, FALSE); return 0;
+		}
 		InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0;
 	}
 	if (message == WM_MOUSEWHEEL && cooking_category_dropdown_) {
@@ -2487,7 +2572,7 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 	if (message == WM_LBUTTONDOWN) {
 		int x = LOWORD(l), y = HIWORD(l);
 		if (x >= 655 && x <= 687 && y >= 18 && y <= 50) { InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0; }
-		if (x >= 38 && x <= 341 && y >= 61 && y <= 87) {
+		if (x >= 45 && x <= 334 && y >= 61 && y <= 87) {
 			cooking_category_dropdown_ = !cooking_category_dropdown_;
 			if (cooking_category_dropdown_) {
 				int selected_option = cooking_category_ + 1;
@@ -2499,7 +2584,7 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 		if (cooking_category_dropdown_) {
 			const int total_options = cooking_category_count_ + 1;
 			const int visible_options = total_options < 10 ? total_options : 10;
-			if (x >= 38 && x <= 341 && y >= 90 && y < 94 + visible_options * 28) {
+			if (x >= 45 && x <= 334 && y >= 90 && y < 94 + visible_options * 28) {
 				int row = (y - 93) / 28;
 				if (row < 0) row = 0;
 				int option = cooking_category_scroll_ + row;
@@ -2511,12 +2596,18 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 			cooking_category_dropdown_ = 0;
 			InvalidateRect(window, NULL, FALSE); return 0;
 		}
+		if (!cooking_item_details_open_ && x >= 474 && x <= 594 && y >= 197 && y <= 220) {
+			cooking_item_details_open_ = 1; InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		if (cooking_item_details_open_ && x >= 469 && x <= 599 && y >= 414 && y <= 441) {
+			cooking_item_details_open_ = 0; InvalidateRect(window, NULL, FALSE); return 0;
+		}
 		int pages = (visible_cooking_count() + 5) / 6; if (pages < 1) pages = 1;
-		if (x >= 36 && x <= 108 && y >= 435 && y <= 462 && cooking_page_ > 0) --cooking_page_;
-		else if (x >= 270 && x <= 342 && y >= 435 && y <= 462 && cooking_page_ + 1 < pages) ++cooking_page_;
-		else if (x >= 38 && x <= 341 && y >= 95 && y < 425) {
+		if (x >= 45 && x <= 117 && y >= 435 && y <= 462 && cooking_page_ > 0) { --cooking_page_; cooking_item_details_open_ = 0; }
+		else if (x >= 262 && x <= 334 && y >= 435 && y <= 462 && cooking_page_ + 1 < pages) { ++cooking_page_; cooking_item_details_open_ = 0; }
+		else if (x >= 45 && x <= 334 && y >= 95 && y < 425) {
 			int slot = (y - 95) / 55; int index = visible_cooking_index(cooking_page_ * 6 + slot);
-			if (index >= 0) cooking_selected_ = index;
+			if (index >= 0) { cooking_selected_ = index; cooking_item_details_open_ = 0; }
 		}
 		InvalidateRect(window, NULL, FALSE); return 0;
 	}
