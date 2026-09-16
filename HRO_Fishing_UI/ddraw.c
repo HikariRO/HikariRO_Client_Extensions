@@ -2317,6 +2317,23 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 	RECT right_page = {366, 49, 701, 482};
 	fill_round(dc, left_page, 9, RGB(244, 231, 194));
 	fill_round(dc, right_page, 9, RGB(244, 231, 194));
+	/* Subtle ruled parchment, leather trim and page corners give the window a
+	 * recipe-journal identity while keeping all text readable. */
+	for (int y = 91; y < 470; y += 29) {
+		RECT left_rule = {27, y, 345, y + 1};
+		RECT right_rule = {374, y, 693, y + 1};
+		fill_color(dc, left_rule, RGB(235, 216, 174));
+		fill_color(dc, right_rule, RGB(235, 216, 174));
+	}
+	HBRUSH cover_border = CreateSolidBrush(RGB(207, 154, 72));
+	RECT cover_frame = {12, 46, 708, 486}; FrameRect(dc, &cover_frame, cover_border);
+	DeleteObject(cover_border);
+	POINT left_corner[3] = {{20, 49}, {49, 49}, {20, 78}};
+	POINT right_corner[3] = {{700, 49}, {671, 49}, {700, 78}};
+	HBRUSH corner_brush = CreateSolidBrush(RGB(220, 184, 111));
+	HBRUSH previous_brush = (HBRUSH)SelectObject(dc, corner_brush);
+	Polygon(dc, left_corner, 3); Polygon(dc, right_corner, 3);
+	SelectObject(dc, previous_brush); DeleteObject(corner_brush);
 	/* Page-edge lines and a shaded gutter make the overlay read as an open book
 	 * without requiring an additional client texture. */
 	for (int line = 0; line < 4; ++line) {
@@ -2329,6 +2346,12 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 	fill_color(dc, gutter, RGB(111, 72, 42));
 	RECT gutter_light = {358, 56, 362, 476};
 	fill_color(dc, gutter_light, RGB(194, 157, 100));
+	for (int binding = 0; binding < 5; ++binding) {
+		RECT band = {350, 102 + binding * 78, 370, 111 + binding * 78};
+		fill_round(dc, band, 4, RGB(82, 49, 29));
+		RECT band_light = {353, 104 + binding * 78, 367, 107 + binding * 78};
+		fill_round(dc, band_light, 2, RGB(185, 133, 70));
+	}
 	HPEN page_pen = CreatePen(PS_SOLID, 1, RGB(205, 179, 126));
 	HPEN previous_pen = (HPEN)SelectObject(dc, page_pen);
 	MoveToEx(dc, 25, 474, NULL); LineTo(dc, 346, 474);
@@ -2343,7 +2366,7 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
 	HFONT old_font = (HFONT)SelectObject(dc, title_font);
 	SetTextColor(dc, RGB(246, 222, 164));
-	RECT title = {24, 15, 650, 42}; DrawTextA(dc, "HikariRO Recipe Book", -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	RECT title = {24, 15, 650, 42}; DrawTextA(dc, "Recipe Book", -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 	RECT close_box = {680, 12, 710, 42}; fill_round(dc, close_box, 7, RGB(104, 44, 47));
 	SetTextColor(dc, RGB(255, 221, 216)); DrawTextA(dc, "X", -1, &close_box, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
@@ -2396,22 +2419,23 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 
 	if (cooking_recipe_count_ > 0 && cooking_selected_ < cooking_recipe_count_) {
 		CookingRecipe* recipe = &cooking_recipes_[cooking_selected_];
-		RECT product_icon = {375, 102, 456, 187};
-		draw_recipe_collection(dc, product_icon, recipe);
+		RECT product_name = {378, 99, 688, 145};
 		SelectObject(dc, title_font); SetTextColor(dc, RGB(71, 43, 23));
-		RECT product_name = {462, 109, 679, 155};
-		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &product_name, DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_WORD_ELLIPSIS);
+		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &product_name,
+			DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+		RECT product_icon = {381, 148, 456, 218};
+		draw_recipe_collection(dc, product_icon, recipe);
 		SelectObject(dc, small_font); char line[128];
 		wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
-		RECT info = {462, 157, 682, 178}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_LEFT | DT_SINGLELINE);
-		RECT separator = {375, 194, 680, 196}; fill_color(dc, separator, RGB(188, 154, 96));
+		RECT info = {466, 169, 688, 190}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_LEFT | DT_SINGLELINE);
+		RECT separator = {375, 226, 680, 228}; fill_color(dc, separator, RGB(188, 154, 96));
 		SelectObject(dc, normal_font); SetTextColor(dc, RGB(76, 47, 25));
-		RECT ingredients_title = {378, 204, 670, 228}; DrawTextA(dc, "Required ingredients", -1, &ingredients_title, DT_LEFT | DT_SINGLELINE);
+		RECT ingredients_title = {378, 234, 670, 255}; DrawTextA(dc, "Required ingredients", -1, &ingredients_title, DT_LEFT | DT_SINGLELINE);
 		SelectObject(dc, small_font);
 		int shown = recipe->ingredient_count > 6 ? 6 : recipe->ingredient_count;
 		for (int i = 0; i < shown; ++i) {
 			CookingIngredient* ingredient = &recipe->ingredients[i];
-			int top = 235 + i * 36;
+			int top = 258 + i * 31;
 			RECT ingredient_icon = {380, top, 410, top + 30};
 			draw_item_image(dc, ingredient_icon, &ingredient->image, &ingredient->image_attempted, ingredient->item_id, ingredient->resource_name);
 			RECT ingredient_name = {418, top, 595, top + 30};
@@ -2575,7 +2599,7 @@ static DWORD WINAPI hud_thread(void* unused) {
 	cooking_class.lpszClassName = "HROCookingBook";
 	RegisterClassA(&cooking_class);
 	cooking_book_ = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_LAYERED,
-		cooking_class.lpszClassName, "HikariRO Recipe Book", WS_POPUP, 0, 0, 720, 500,
+		cooking_class.lpszClassName, "Recipe Book", WS_POPUP, 0, 0, 720, 500,
 		game_, NULL, cooking_class.hInstance, NULL);
 	SetLayeredWindowAttributes(cooking_book_, 0, 255, LWA_ALPHA);
 	SetTimer(cooking_book_, 1, 120, NULL);
