@@ -4,7 +4,7 @@ Custom client-side extensions used by HikariRO.
 
 ## Current baseline
 
-The initial source baseline is **HRO_Fishing_UI_Filter_HRO_Prefix_v8.1** (2026-09-14). It contains the current Fishing HUD / Fishing Album, Card Album and the HRO custom-storage control-traffic filtering used by the client extension.
+The initial source baseline is **HRO_Fishing_UI_Filter_HRO_Prefix_v8.1** (2026-09-14). It contains the current Fishing HUD / Fishing Album, Card Album, Cooking Recipe Book and the HRO custom-storage control-traffic filtering used by the client extension.
 
 The repository intentionally tracks source code and build scripts, not compiled `ddraw.dll` binaries or Ragnarok Online client data.
 
@@ -23,6 +23,8 @@ build\build_x86.bat
 ```
 
 The resulting `ddraw.dll` is generated in the repository root and is ignored by Git.
+
+The Cooking Recipe Book is opened by the map-server through `HROCOOK` control records. Categories and recipes are populated from `db/import/hro_cooking_db.yml`; no recipe list is embedded in the DLL.
 
 ## Development rule
 

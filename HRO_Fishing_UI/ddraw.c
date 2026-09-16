@@ -25,6 +25,7 @@ static float shown_tension_, shown_distance_;
 static HWND game_, hud_;
 static HWND album_;
 static HWND card_album_;
+static HWND cooking_book_;
 static HBITMAP card_album_background_;
 static int card_album_background_attempted_;
 static HBITMAP album_background_;
@@ -81,6 +82,31 @@ static BYTE* card_name_table_;
 static DWORD card_name_table_size_;
 static int card_name_table_attempted_;
 static int card_chat_bytes_to_discard_;
+
+typedef struct CookingIngredient {
+	int item_id, required, owned;
+	char name[64], resource_name[64];
+	HBITMAP image;
+	int image_attempted;
+} CookingIngredient;
+
+typedef struct CookingRecipe {
+	int id, category, product_id, amount, success_rate, consume_failure, unlocked, recipe_item;
+	char name[64], resource_name[64];
+	CookingIngredient ingredients[12];
+	int ingredient_count;
+	HBITMAP image;
+	int image_attempted;
+} CookingRecipe;
+
+static CookingRecipe cooking_recipes_[256];
+static char cooking_categories_[64][32];
+static volatile LONG cooking_book_open_;
+static int cooking_recipe_count_, cooking_expected_, cooking_category_count_;
+static int cooking_selected_, cooking_category_ = -1, cooking_page_;
+static int cooking_first_paint_ = 1, cooking_image_load_budget_;
+static BYTE cooking_tail_[512];
+static int cooking_tail_len_;
 
 static HBITMAP load_fishing_background(const char* filename);
 
@@ -219,6 +245,81 @@ static void parse_card_payload(const char* payload) {
 	}
 }
 
+static int split_fields(char* record, char** fields, int maximum) {
+	int count = 1;
+	fields[0] = record;
+	while (count < maximum) {
+		char* delimiter = strchr(fields[count - 1], '|');
+		if (!delimiter) break;
+		*delimiter = '\0';
+		fields[count++] = delimiter + 1;
+	}
+	return count;
+}
+
+static CookingRecipe* cooking_recipe_by_id(int id) {
+	for (int i = 0; i < cooking_recipe_count_; ++i)
+		if (cooking_recipes_[i].id == id) return &cooking_recipes_[i];
+	return NULL;
+}
+
+static void parse_cooking_payload(const char* payload) {
+	if (payload[0] == 'B' && payload[1] == '|') {
+		int categories = 0, recipes = 0;
+		if (sscanf(payload + 2, "%d|%d", &categories, &recipes) == 2) {
+			cooking_recipe_count_ = 0;
+			cooking_category_count_ = categories > 64 ? 64 : categories;
+			cooking_expected_ = recipes;
+			cooking_selected_ = cooking_page_ = 0;
+			cooking_category_ = -1;
+			cooking_first_paint_ = 1;
+			ZeroMemory(cooking_categories_, sizeof(cooking_categories_));
+			InterlockedExchange(&cooking_book_open_, 1);
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
+	} else if (payload[0] == 'C' && payload[1] == '|') {
+		int index = -1; char name[32] = {0};
+		if (sscanf(payload + 2, "%d|%31[^|]", &index, name) == 2 && index >= 0 && index < 64)
+			lstrcpynA(cooking_categories_[index], name, sizeof(cooking_categories_[index]));
+	} else if (payload[0] == 'R' && payload[1] == '|' && cooking_recipe_count_ < 256) {
+		char record[512]; char* field[11];
+		lstrcpynA(record, payload + 2, sizeof(record));
+		if (split_fields(record, field, 11) == 11) {
+			CookingRecipe entry = {0};
+			if (sscanf(field[0], "%d", &entry.id) == 1 && sscanf(field[1], "%d", &entry.category) == 1 &&
+				sscanf(field[2], "%d", &entry.product_id) == 1 && sscanf(field[3], "%d", &entry.amount) == 1 &&
+				sscanf(field[4], "%d", &entry.success_rate) == 1 && sscanf(field[5], "%d", &entry.consume_failure) == 1 &&
+				sscanf(field[6], "%d", &entry.unlocked) == 1 && sscanf(field[7], "%d", &entry.recipe_item) == 1 &&
+				sscanf(field[8], "%d", &entry.ingredient_count) == 1) {
+				lstrcpynA(entry.name, field[9], sizeof(entry.name));
+				lstrcpynA(entry.resource_name, field[10], sizeof(entry.resource_name));
+				if (entry.ingredient_count > 12) entry.ingredient_count = 12;
+				cooking_recipes_[cooking_recipe_count_++] = entry;
+			}
+		}
+	} else if (payload[0] == 'I' && payload[1] == '|') {
+		char record[384]; char* field[6];
+		lstrcpynA(record, payload + 2, sizeof(record));
+		if (split_fields(record, field, 6) == 6) {
+			int recipe_id = 0; CookingIngredient ingredient = {0};
+			if (sscanf(field[0], "%d", &recipe_id) == 1 && sscanf(field[1], "%d", &ingredient.item_id) == 1 &&
+				sscanf(field[2], "%d", &ingredient.required) == 1 && sscanf(field[3], "%d", &ingredient.owned) == 1) {
+				lstrcpynA(ingredient.name, field[4], sizeof(ingredient.name));
+				lstrcpynA(ingredient.resource_name, field[5], sizeof(ingredient.resource_name));
+				CookingRecipe* recipe = cooking_recipe_by_id(recipe_id);
+				if (recipe) {
+					int slot = 0;
+					while (slot < 12 && recipe->ingredients[slot].item_id) ++slot;
+					if (slot < 12) recipe->ingredients[slot] = ingredient;
+				}
+			}
+		}
+	} else if (payload[0] == 'O') {
+		InterlockedExchange(&cooking_book_open_, 1);
+		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+	}
+}
+
 static void suppress_stream_marker(char* data, int length, const char* marker, int marker_length) {
 	for (int i = 0; i + marker_length <= length; ++i)
 		if (bytes_equal((BYTE*)data + i, marker, marker_length)) data[i] = 0;
@@ -288,6 +389,38 @@ static void parse_card_stream(char* data, int length) {
 	} else {
 		card_tail_len_ = total > marker_length - 1 ? marker_length - 1 : total;
 		byte_copy(card_tail_, merged + total - card_tail_len_, card_tail_len_);
+	}
+	suppress_stream_marker(data, length, marker, marker_length);
+	if (crosses && length > 0) data[0] = 0;
+}
+
+static void parse_cooking_stream(char* data, int length) {
+	static const char marker[] = "HROCOOK|";
+	const int marker_length = 8;
+	BOOL crosses = marker_crosses_boundary(cooking_tail_, cooking_tail_len_, data, length, marker, marker_length);
+	BYTE merged[8704];
+	int copy = length > 8192 ? 8192 : length;
+	byte_copy(merged, cooking_tail_, cooking_tail_len_);
+	byte_copy(merged + cooking_tail_len_, data + length - copy, copy);
+	int total = cooking_tail_len_ + copy, unfinished = -1;
+	for (int i = 0; i + marker_length <= total; ++i) {
+		if (!bytes_equal(merged + i, marker, marker_length)) continue;
+		int end = i + marker_length;
+		while (end < total && merged[end] != ';' && end - i < 511) ++end;
+		if (end >= total || merged[end] != ';') { unfinished = i; break; }
+		char payload[512]; int payload_length = end - (i + marker_length);
+		byte_copy(payload, merged + i + marker_length, payload_length);
+		payload[payload_length] = '\0';
+		parse_cooking_payload(payload);
+		i = end;
+	}
+	if (unfinished >= 0) {
+		cooking_tail_len_ = total - unfinished;
+		if (cooking_tail_len_ > 511) cooking_tail_len_ = 511;
+		byte_copy(cooking_tail_, merged + total - cooking_tail_len_, cooking_tail_len_);
+	} else {
+		cooking_tail_len_ = total > marker_length - 1 ? marker_length - 1 : total;
+		byte_copy(cooking_tail_, merged + total - cooking_tail_len_, cooking_tail_len_);
 	}
 	suppress_stream_marker(data, length, marker, marker_length);
 	if (crosses && length > 0) data[0] = 0;
@@ -401,6 +534,7 @@ static void apply_fishing_state(int state, int tension, int distance, int resist
 static void parse_marker(char* data, int length) {
 	parse_album_stream(data, length);
 	parse_card_stream(data, length);
+	parse_cooking_stream(data, length);
 	suppress_storage_stream(data, length);
 	for (int i = 0; i + 8 < length; ++i) {
 		if (!bytes_equal((BYTE*)data + i, "HROFISH|", 8)) continue;
@@ -475,6 +609,8 @@ static int strip_card_chat_packets(char* data, int length) {
 		if (marker_offset >= 0 && packet_length >= marker_offset + 8 &&
 			offset + marker_offset < length) {
 			static const char card_marker[] = "HROCARD|";
+			static const char album_marker[] = "HROALBUM|";
+			static const char cooking_marker[] = "HROCOOK|";
 			static const char storage_marker[] = "HROSTORAGE|";
 			int available = length - offset - marker_offset;
 			int compared = available < 8 ? available : 8;
@@ -484,6 +620,20 @@ static int strip_card_chat_packets(char* data, int length) {
 				/* parse_marker() has already replaced the first H with NUL. */
 				if (i == 0 && value == 0) continue;
 				if (value != (unsigned char)card_marker[i]) { is_card_packet = FALSE; break; }
+			}
+			int album_compared = available < 9 ? available : 9;
+			BOOL is_album_packet = TRUE;
+			for (int i = 0; i < album_compared; ++i) {
+				unsigned char value = packet[marker_offset + i];
+				if (i == 0 && value == 0) continue;
+				if (value != (unsigned char)album_marker[i]) { is_album_packet = FALSE; break; }
+			}
+			int cooking_compared = available < 8 ? available : 8;
+			BOOL is_cooking_packet = TRUE;
+			for (int i = 0; i < cooking_compared; ++i) {
+				unsigned char value = packet[marker_offset + i];
+				if (i == 0 && value == 0) continue;
+				if (value != (unsigned char)cooking_marker[i]) { is_cooking_packet = FALSE; break; }
 			}
 			int storage_compared = available < 11 ? available : 11;
 			BOOL is_storage_packet = TRUE;
@@ -496,9 +646,11 @@ static int strip_card_chat_packets(char* data, int length) {
 			 * receive may end after H, HR or HRO; hide that incomplete prefix
 			 * while the stream tails retain it for reconstruction. */
 			if (available > 0 && available < 4 &&
-				is_card_packet && is_storage_packet)
+				is_card_packet && is_album_packet && is_cooking_packet && is_storage_packet)
 				packet[marker_offset] = 0;
 			if ((is_card_packet && compared >= 8) ||
+				(is_album_packet && album_compared >= 9) ||
+				(is_cooking_packet && cooking_compared >= 8) ||
 				(is_storage_packet && storage_compared >= 11)) {
 				int present = length - offset;
 				if (present >= packet_length) {
@@ -1262,6 +1414,49 @@ static HBITMAP load_collection_image(const char* resource_name) {
 	return NULL;
 }
 
+static HBITMAP load_item_image(const char* resource_name) {
+	if (!resource_name || !resource_name[0]) return NULL;
+	char wanted[256], root[MAX_PATH], path[MAX_PATH], grf_name[128];
+	lstrcpyA(wanted, "data\\texture\\\xC0\xAF\xC0\xFA\xC0\xCE\xC5\xCD\xC6\xE4\xC0\xCC\xBD\xBA\\item\\");
+	lstrcatA(wanted, resource_name);
+	lstrcatA(wanted, ".bmp");
+	GetModuleFileNameA(NULL, root, MAX_PATH);
+	char* slash = strrchr(root, '\\');
+	if (slash) *(slash + 1) = 0;
+	lstrcpynA(path, root, MAX_PATH); lstrcatA(path, wanted);
+	HBITMAP loose = (HBITMAP)LoadImageA(NULL, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (loose) return loose;
+	lstrcpynA(path, root, MAX_PATH); lstrcatA(path, "DATA.ini");
+	for (int index = 0; index < 32; ++index) {
+		char key[16]; wsprintfA(key, "%d", index);
+		if (!GetPrivateProfileStringA("Data", key, "", grf_name, sizeof(grf_name), path)) break;
+		char archive[MAX_PATH]; lstrcpynA(archive, root, MAX_PATH); lstrcatA(archive, grf_name);
+		HBITMAP image = load_bitmap_from_grf(archive, wanted);
+		if (image) return image;
+	}
+	return NULL;
+}
+
+static void draw_item_image(HDC dc, RECT area, HBITMAP* image, int* attempted, const char* resource_name) {
+	if (!*attempted && cooking_image_load_budget_ > 0) {
+		--cooking_image_load_budget_;
+		*attempted = 1;
+		*image = load_item_image(resource_name);
+	}
+	if (!*image) {
+		RECT placeholder = {area.left + 5, area.top + 5, area.right - 5, area.bottom - 5};
+		fill_round(dc, placeholder, 7, RGB(214, 199, 165));
+		SetTextColor(dc, RGB(112, 87, 56));
+		DrawTextA(dc, "?", -1, &placeholder, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		return;
+	}
+	BITMAP bitmap; GetObject(*image, sizeof(bitmap), &bitmap);
+	int width = area.right - area.left, height = area.bottom - area.top;
+	HDC source = CreateCompatibleDC(dc); HBITMAP previous = (HBITMAP)SelectObject(source, *image);
+	TransparentBlt(dc, area.left, area.top, width, height, source, 0, 0, bitmap.bmWidth, bitmap.bmHeight, RGB(255, 0, 255));
+	SelectObject(source, previous); DeleteDC(source);
+}
+
 static HBITMAP load_album_background(void) {
 	char wanted[256], root[MAX_PATH], path[MAX_PATH], grf_name[128];
 	lstrcpyA(wanted, "data\\texture\\\xC0\xAF\xC0\xFA\xC0\xCE\xC5\xCD\xC6\xE4\xC0\xCC\xBD\xBA\\hro_fishing\\album_book.bmp");
@@ -1982,6 +2177,166 @@ static LRESULT CALLBACK card_album_proc(HWND window, UINT message, WPARAM w, LPA
 	return DefWindowProcA(window, message, w, l);
 }
 
+static BOOL cooking_recipe_visible(int index) {
+	return index >= 0 && index < cooking_recipe_count_ &&
+		(cooking_category_ < 0 || cooking_recipes_[index].category == cooking_category_);
+}
+
+static int visible_cooking_count(void) {
+	int count = 0;
+	for (int i = 0; i < cooking_recipe_count_; ++i) if (cooking_recipe_visible(i)) ++count;
+	return count;
+}
+
+static int visible_cooking_index(int position) {
+	for (int i = 0; i < cooking_recipe_count_; ++i)
+		if (cooking_recipe_visible(i) && position-- == 0) return i;
+	return -1;
+}
+
+static void reset_cooking_page(void) {
+	cooking_page_ = 0;
+	cooking_selected_ = visible_cooking_index(0);
+	if (cooking_selected_ < 0) cooking_selected_ = 0;
+}
+
+static void draw_cooking_book_window(HDC dc, RECT area) {
+	cooking_image_load_budget_ = cooking_first_paint_ ? 0 : 2;
+	cooking_first_paint_ = 0;
+	draw_panel(dc, area);
+	SetBkMode(dc, TRANSPARENT);
+	HFONT title_font = CreateFontA(-21, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
+	HFONT normal_font = CreateFontA(-15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
+	HFONT small_font = CreateFontA(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
+	HFONT old_font = (HFONT)SelectObject(dc, title_font);
+	SetTextColor(dc, RGB(246, 222, 164));
+	RECT title = {24, 15, 650, 42}; DrawTextA(dc, "HikariRO Recipe Book", -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	RECT close_box = {680, 12, 710, 42}; fill_round(dc, close_box, 7, RGB(104, 44, 47));
+	SetTextColor(dc, RGB(255, 221, 216)); DrawTextA(dc, "X", -1, &close_box, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+	SelectObject(dc, small_font);
+	int tab_count = cooking_category_count_ + 1;
+	int tab_width = tab_count > 0 ? 650 / tab_count : 100;
+	if (tab_width > 120) tab_width = 120;
+	for (int tab = 0; tab < tab_count; ++tab) {
+		int left = 25 + tab * tab_width;
+		RECT box = {left, 53, left + tab_width - 5, 80};
+		BOOL selected = cooking_category_ == tab - 1;
+		fill_round(dc, box, 5, selected ? RGB(208, 166, 75) : RGB(42, 91, 106));
+		SetTextColor(dc, selected ? RGB(55, 37, 21) : RGB(232, 241, 238));
+		DrawTextA(dc, tab == 0 ? "All" : cooking_categories_[tab - 1], -1, &box,
+			DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+	}
+
+	int visible = visible_cooking_count();
+	int pages = visible > 0 ? (visible + 5) / 6 : 1;
+	if (cooking_page_ >= pages) cooking_page_ = pages - 1;
+	SelectObject(dc, normal_font);
+	for (int slot = 0; slot < 6; ++slot) {
+		int index = visible_cooking_index(cooking_page_ * 6 + slot);
+		if (index < 0) break;
+		CookingRecipe* recipe = &cooking_recipes_[index];
+		int row = slot, top = 95 + row * 58;
+		RECT cell = {28, top, 328, top + 51};
+		fill_round(dc, cell, 7, index == cooking_selected_ ? RGB(225, 190, 111) : RGB(229, 216, 181));
+		RECT icon = {36, top + 5, 77, top + 46};
+		draw_item_image(dc, icon, &recipe->image, &recipe->image_attempted, recipe->resource_name);
+		SetTextColor(dc, recipe->unlocked ? RGB(62, 42, 25) : RGB(119, 101, 76));
+		RECT name = {86, top + 6, 316, top + 28};
+		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &name, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+		SelectObject(dc, small_font);
+		char state[64]; wsprintfA(state, recipe->unlocked ? "%d.%02d%% success" : "Recipe not learned",
+			recipe->success_rate / 100, recipe->success_rate % 100);
+		RECT state_area = {86, top + 29, 316, top + 46};
+		SetTextColor(dc, recipe->unlocked ? RGB(39, 116, 81) : RGB(143, 65, 57));
+		DrawTextA(dc, state, -1, &state_area, DT_LEFT | DT_SINGLELINE);
+		SelectObject(dc, normal_font);
+	}
+
+	RECT previous = {29, 448, 105, 476}, next = {251, 448, 327, 476};
+	fill_round(dc, previous, 6, cooking_page_ > 0 ? RGB(42, 91, 106) : RGB(111, 124, 122));
+	fill_round(dc, next, 6, cooking_page_ + 1 < pages ? RGB(42, 91, 106) : RGB(111, 124, 122));
+	SelectObject(dc, small_font); SetTextColor(dc, RGB(241, 238, 218));
+	DrawTextA(dc, "Previous", -1, &previous, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	DrawTextA(dc, "Next", -1, &next, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	char page[32]; wsprintfA(page, "%d / %d", cooking_page_ + 1, pages);
+	RECT page_area = {130, 448, 226, 476}; SetTextColor(dc, RGB(77, 53, 31));
+	DrawTextA(dc, page, -1, &page_area, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+	RECT detail = {358, 94, 695, 476}; fill_round(dc, detail, 10, RGB(235, 222, 188));
+	if (cooking_recipe_count_ > 0 && cooking_selected_ < cooking_recipe_count_) {
+		CookingRecipe* recipe = &cooking_recipes_[cooking_selected_];
+		RECT product_icon = {378, 111, 450, 183};
+		draw_item_image(dc, product_icon, &recipe->image, &recipe->image_attempted, recipe->resource_name);
+		SelectObject(dc, title_font); SetTextColor(dc, RGB(71, 43, 23));
+		RECT product_name = {462, 109, 679, 155};
+		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &product_name, DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_WORD_ELLIPSIS);
+		SelectObject(dc, small_font); char line[128];
+		wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
+		RECT info = {462, 157, 682, 178}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_LEFT | DT_SINGLELINE);
+		RECT separator = {375, 194, 680, 196}; fill_color(dc, separator, RGB(188, 154, 96));
+		SelectObject(dc, normal_font); SetTextColor(dc, RGB(76, 47, 25));
+		RECT ingredients_title = {378, 204, 670, 228}; DrawTextA(dc, "Required ingredients", -1, &ingredients_title, DT_LEFT | DT_SINGLELINE);
+		SelectObject(dc, small_font);
+		int shown = recipe->ingredient_count > 6 ? 6 : recipe->ingredient_count;
+		for (int i = 0; i < shown; ++i) {
+			CookingIngredient* ingredient = &recipe->ingredients[i];
+			int top = 235 + i * 36;
+			RECT ingredient_icon = {380, top, 410, top + 30};
+			draw_item_image(dc, ingredient_icon, &ingredient->image, &ingredient->image_attempted, ingredient->resource_name);
+			RECT ingredient_name = {418, top, 595, top + 30};
+			SetTextColor(dc, ingredient->owned >= ingredient->required ? RGB(37, 118, 73) : RGB(174, 54, 45));
+			DrawTextA(dc, ingredient->name, -1, &ingredient_name, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+			wsprintfA(line, "%d / %d", ingredient->owned, ingredient->required);
+			RECT amounts = {598, top, 673, top + 30}; DrawTextA(dc, line, -1, &amounts, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+		}
+		RECT failure = {378, 454, 677, 471};
+		SetTextColor(dc, recipe->consume_failure ? RGB(155, 58, 47) : RGB(43, 111, 73));
+		DrawTextA(dc, recipe->consume_failure ? "Failure consumes ingredients." : "Failure preserves ingredients.", -1, &failure, DT_LEFT | DT_SINGLELINE);
+	}
+	SelectObject(dc, old_font); DeleteObject(title_font); DeleteObject(normal_font); DeleteObject(small_font);
+}
+
+static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
+	if (message == WM_ERASEBKGND) return 1;
+	if (message == WM_TIMER && w == 1) {
+		if (cooking_book_open_ && IsWindowVisible(window)) InvalidateRect(window, NULL, FALSE);
+		return 0;
+	}
+	if (message == WM_KEYDOWN && w == VK_ESCAPE) {
+		InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0;
+	}
+	if (message == WM_LBUTTONDOWN) {
+		int x = LOWORD(l), y = HIWORD(l);
+		if (x >= 675 && y <= 47) { InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0; }
+		int tab_count = cooking_category_count_ + 1;
+		int tab_width = tab_count > 0 ? 650 / tab_count : 100; if (tab_width > 120) tab_width = 120;
+		if (y >= 53 && y <= 80 && x >= 25 && x < 25 + tab_count * tab_width) {
+			int tab = (x - 25) / tab_width; cooking_category_ = tab - 1; reset_cooking_page();
+			InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		int pages = (visible_cooking_count() + 5) / 6; if (pages < 1) pages = 1;
+		if (x >= 29 && x <= 105 && y >= 448 && y <= 476 && cooking_page_ > 0) --cooking_page_;
+		else if (x >= 251 && x <= 327 && y >= 448 && y <= 476 && cooking_page_ + 1 < pages) ++cooking_page_;
+		else if (x >= 28 && x <= 328 && y >= 95 && y < 443) {
+			int slot = (y - 95) / 58; int index = visible_cooking_index(cooking_page_ * 6 + slot);
+			if (index >= 0) cooking_selected_ = index;
+		}
+		InvalidateRect(window, NULL, FALSE); return 0;
+	}
+	if (message == WM_PAINT) {
+		PAINTSTRUCT paint; HDC dc = BeginPaint(window, &paint); RECT area; GetClientRect(window, &area);
+		HDC buffer_dc = CreateCompatibleDC(dc); HBITMAP bitmap = CreateCompatibleBitmap(dc, area.right, area.bottom);
+		HBITMAP old = (HBITMAP)SelectObject(buffer_dc, bitmap); draw_cooking_book_window(buffer_dc, area);
+		BitBlt(dc, 0, 0, area.right, area.bottom, buffer_dc, 0, 0, SRCCOPY);
+		SelectObject(buffer_dc, old); DeleteObject(bitmap); DeleteDC(buffer_dc); EndPaint(window, &paint); return 0;
+	}
+	return DefWindowProcA(window, message, w, l);
+}
+
 static DWORD WINAPI hud_thread(void* unused) {
 	(void)unused;
 	hook_recv();
@@ -2026,6 +2381,19 @@ static DWORD WINAPI hud_thread(void* unused) {
 	SetTimer(card_album_, 1, 120, NULL);
 	SetWindowLongPtrA(card_album_, GWLP_HWNDPARENT, (LONG_PTR)game_);
 	log_line(card_album_ ? "Card Album window created." : "ERROR: Card Album creation failed.");
+	WNDCLASSA cooking_class = {0};
+	cooking_class.lpfnWndProc = cooking_book_proc;
+	cooking_class.hInstance = wc.hInstance;
+	cooking_class.hCursor = LoadCursor(NULL, IDC_HAND);
+	cooking_class.lpszClassName = "HROCookingBook";
+	RegisterClassA(&cooking_class);
+	cooking_book_ = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+		cooking_class.lpszClassName, "HikariRO Recipe Book", WS_POPUP, 0, 0, 720, 500,
+		game_, NULL, cooking_class.hInstance, NULL);
+	SetLayeredWindowAttributes(cooking_book_, 0, 255, LWA_ALPHA);
+	SetTimer(cooking_book_, 1, 120, NULL);
+	SetWindowLongPtrA(cooking_book_, GWLP_HWNDPARENT, (LONG_PTR)game_);
+	log_line(cooking_book_ ? "Cooking Recipe Book window created." : "ERROR: Recipe Book creation failed.");
 	MSG message;
 	for (;;) {
 		while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE)) {
@@ -2041,6 +2409,7 @@ static DWORD WINAPI hud_thread(void* unused) {
 				SetWindowLongPtrA(hud_, GWLP_HWNDPARENT, (LONG_PTR)game_);
 				SetWindowLongPtrA(album_, GWLP_HWNDPARENT, (LONG_PTR)game_);
 				SetWindowLongPtrA(card_album_, GWLP_HWNDPARENT, (LONG_PTR)game_);
+				SetWindowLongPtrA(cooking_book_, GWLP_HWNDPARENT, (LONG_PTR)game_);
 				log_line("HikariRO game window updated.");
 			}
 		}
@@ -2094,6 +2463,17 @@ static DWORD WINAPI hud_thread(void* unused) {
 				if (!was_visible) InvalidateRect(card_album_, NULL, FALSE);
 			}
 		} else ShowWindow(card_album_, SW_HIDE);
+		if (cooking_book_open_ && IsWindowVisible(game_) && !IsIconic(game_)) {
+			RECT client; POINT origin = {0, 0}; GetClientRect(game_, &client); ClientToScreen(game_, &origin);
+			int x = origin.x + (client.right - 720) / 2;
+			int y = origin.y + (client.bottom - 500) / 2;
+			RECT current; GetWindowRect(cooking_book_, &current);
+			if (!IsWindowVisible(cooking_book_) || current.left != x || current.top != y) {
+				BOOL was_visible = IsWindowVisible(cooking_book_);
+				SetWindowPos(cooking_book_, HWND_TOPMOST, x, y, 720, 500, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+				if (!was_visible) InvalidateRect(cooking_book_, NULL, FALSE);
+			}
+		} else ShowWindow(cooking_book_, SW_HIDE);
 		Sleep(33);
 	}
 }
@@ -2121,7 +2501,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album DLL V25.3 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.0 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
