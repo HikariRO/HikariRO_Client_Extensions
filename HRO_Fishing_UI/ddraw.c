@@ -122,6 +122,7 @@ static int cooking_selected_, cooking_category_ = -1, cooking_page_;
 static int cooking_category_dropdown_, cooking_category_scroll_;
 static int cooking_item_details_open_;
 static int cooking_mode_, cooking_result_, cooking_result_received_, cooking_request_pending_;
+static unsigned long cooking_session_token_;
 static volatile LONG cooking_request_serial_;
 static volatile LONG cooking_progress_start_;
 static volatile LONG cooking_chat_input_ready_;
@@ -313,8 +314,10 @@ static void release_cooking_catalog(void) {
 static void parse_cooking_payload(const char* payload) {
 	if (payload[0] == 'B' && payload[1] == '|') {
 		int categories = 0, recipes = 0, mode = 0;
-		if (sscanf(payload + 2, "%d|%d|%d", &categories, &recipes, &mode) >= 2) {
+		unsigned long session_token = 0;
+		if (sscanf(payload + 2, "%d|%d|%d|%lu", &categories, &recipes, &mode, &session_token) >= 2) {
 			cooking_mode_ = mode;
+			cooking_session_token_ = session_token;
 			if (!cooking_request_pending_) { cooking_result_ = 0; cooking_result_received_ = 0; }
 			release_cooking_catalog();
 			cooking_recipe_count_ = 0;
@@ -2655,7 +2658,18 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 	const LONG request_serial = request->serial;
 	HeapFree(GetProcessHeap(), 0, request);
 	char command[40];
-	wsprintfA(command, "@hrocook %d", recipe_id);
+	if (cooking_session_token_ == 0) {
+		log_line("Recipe Book request rejected locally: no Chef session token.");
+		if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0)) {
+			cooking_result_ = 0;
+			cooking_result_received_ = 1;
+			cooking_request_pending_ = 0;
+			InterlockedExchange(&cooking_progress_start_, 0);
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
+		return 0;
+	}
+	wsprintfA(command, "@hrocook %d %lu", recipe_id, cooking_session_token_);
 	char log_message[96];
 	wsprintfA(log_message, "Recipe Book request %ld: %s", request_serial, command);
 	log_line(log_message);
@@ -3232,7 +3246,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.5 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.6 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
