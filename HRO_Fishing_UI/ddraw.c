@@ -398,7 +398,8 @@ static void parse_cooking_payload(const char* payload) {
 			if (result == 5 && result_recipe) result_recipe->unlocked = 1;
 			cooking_request_pending_ = 0;
 			InterlockedExchange(&cooking_progress_start_, 0);
-			cooking_category_ = cooking_requested_category_;
+			cooking_category_ = result == 5 && result_recipe ?
+				result_recipe->category : cooking_requested_category_;
 			cooking_requested_category_ = -1;
 			int visible_position = 0;
 			for (int index = 0; index < cooking_recipe_count_; ++index) {
@@ -407,7 +408,7 @@ static void parse_cooking_payload(const char* payload) {
 					cooking_page_ = visible_position / 6;
 					break;
 				}
-				if (cooking_category_ < 0 || cooking_recipes_[index].category == cooking_category_) ++visible_position;
+				if (cooking_recipe_visible(index)) ++visible_position;
 			}
 			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 		}
@@ -2624,7 +2625,8 @@ static void reset_cooking_page(void) {
 }
 
 static BOOL cooking_recipe_can_craft(const CookingRecipe* recipe) {
-	if (!recipe || cooking_mode_ < 1 || !recipe->unlocked || cooking_request_pending_) return FALSE;
+	if (!recipe || cooking_mode_ < 1 || cooking_request_pending_) return FALSE;
+	if (!recipe->unlocked && (!recipe->experiment || cooking_experiments_left_ < 1)) return FALSE;
 	for (int index = 0; index < recipe->ingredient_count; ++index)
 		if (recipe->ingredients[index].owned < recipe->ingredients[index].required) return FALSE;
 	return TRUE;
@@ -2681,7 +2683,10 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 		}
 		return 0;
 	}
-	wsprintfA(command, "@hrocook %d %lu", recipe_id, cooking_session_token_);
+	CookingRecipe* requested_recipe = cooking_recipe_by_id(recipe_id);
+	const BOOL experimenting = requested_recipe && !requested_recipe->unlocked;
+	wsprintfA(command, experimenting ? "@hrocook %d %lu E" : "@hrocook %d %lu",
+		recipe_id, cooking_session_token_);
 	char log_message[96];
 	wsprintfA(log_message, "Recipe Book request %ld: %s", request_serial, command);
 	log_line(log_message);
