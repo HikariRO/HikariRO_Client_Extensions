@@ -365,6 +365,20 @@ static void parse_cooking_payload(const char* payload) {
 				}
 			}
 		}
+	} else if (payload[0] == 'U' && payload[1] == '|') {
+		int recipe_id = 0, item_id = 0, owned = 0;
+		if (sscanf(payload + 2, "%d|%d|%d", &recipe_id, &item_id, &owned) == 3) {
+			CookingRecipe* recipe = cooking_recipe_by_id(recipe_id);
+			if (recipe) {
+				for (int index = 0; index < recipe->ingredient_count; ++index) {
+					if (recipe->ingredients[index].item_id == item_id) {
+						recipe->ingredients[index].owned = owned;
+						break;
+					}
+				}
+			}
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
 	} else if (payload[0] == 'S' && payload[1] == '|') {
 		int result = 0, recipe_id = 0;
 		if (sscanf(payload + 2, "%d|%d", &result, &recipe_id) == 2) {
@@ -572,18 +586,9 @@ static void parse_album_stream(char* data, int length) {
 }
 
 static void log_line(const char* line) {
-	char path[MAX_PATH];
-	GetModuleFileNameA(NULL, path, MAX_PATH);
-	char* slash = NULL;
-	for (char* p = path; *p; ++p) if (*p == '\\') slash = p;
-	if (slash) lstrcpyA(slash + 1, "hro_fishing_ui.log");
-	HANDLE file = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-		NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (file == INVALID_HANDLE_VALUE) return;
-	DWORD written;
-	WriteFile(file, line, (DWORD)lstrlenA(line), &written, NULL);
-	WriteFile(file, "\r\n", 2, &written, NULL);
-	CloseHandle(file);
+	/* Release builds intentionally keep diagnostics disabled. The client must
+	 * not create or grow hro_fishing_ui.log during normal gameplay. */
+	(void)line;
 }
 
 static void apply_fishing_state(int state, int tension, int distance, int resistance,
@@ -3227,7 +3232,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.4 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.5 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
