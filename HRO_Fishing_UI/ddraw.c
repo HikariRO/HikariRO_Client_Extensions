@@ -2873,12 +2873,17 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 		RECT recipe_rule = {91, top + 44, 323, top + 45};
 		fill_color(dc, recipe_rule, RGB(210, 185, 137));
 		RECT icon = {51, top + 4, 84, top + 43};
-		draw_item_image(dc, icon, &recipe->image, &recipe->image_attempted, recipe->product_id, recipe->resource_name);
+		if (recipe->unlocked)
+			draw_item_image(dc, icon, &recipe->image, &recipe->image_attempted, recipe->product_id, recipe->resource_name);
+		else {
+			SetTextColor(dc, RGB(119, 101, 76));
+			DrawTextA(dc, "?", -1, &icon, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		}
 		SetTextColor(dc, recipe->unlocked ? RGB(62, 42, 25) : RGB(119, 101, 76));
 		RECT name = {91, top + 4, 323, top + 25};
-		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &name, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+		DrawTextA(dc, recipe->unlocked ? recipe->name : "???", -1, &name, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 		SelectObject(dc, small_font);
-		char state[64]; wsprintfA(state, recipe->unlocked ? "%d.%02d%% success" : "Recipe not learned",
+		char state[64]; wsprintfA(state, recipe->unlocked ? "%d.%02d%% success" : "Experiment to discover",
 			recipe->success_rate / 100, recipe->success_rate % 100);
 		RECT state_area = {91, top + 26, 323, top + 43};
 		SetTextColor(dc, recipe->unlocked ? RGB(39, 116, 81) : RGB(143, 65, 57));
@@ -2900,7 +2905,7 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 		CookingRecipe* recipe = &cooking_recipes_[cooking_selected_];
 		RECT product_name = {405, 50, 663, 86};
 		SelectObject(dc, title_font); SetTextColor(dc, RGB(71, 43, 23));
-		DrawTextA(dc, recipe->unlocked ? recipe->name : "Locked recipe", -1, &product_name,
+		DrawTextA(dc, recipe->unlocked ? recipe->name : "???", -1, &product_name,
 			DT_CENTER | DT_VCENTER | DT_WORDBREAK);
 		if (cooking_item_details_open_) {
 			if (!recipe->description_attempted) {
@@ -2919,9 +2924,17 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 			DrawTextA(dc, "Back to recipe", -1, &back_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 		} else {
 			RECT product_icon = {493, 88, 573, 168};
-			draw_recipe_collection(dc, product_icon, recipe);
+			if (recipe->unlocked)
+				draw_recipe_collection(dc, product_icon, recipe);
+			else {
+				SelectObject(dc, title_font); SetTextColor(dc, RGB(119, 101, 76));
+				DrawTextA(dc, "?", -1, &product_icon, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			}
 			SelectObject(dc, small_font); char line[128];
-			wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
+			if (recipe->unlocked)
+				wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
+			else
+				wsprintfA(line, "Unknown dish    Experiments left today: %d", cooking_experiments_left_);
 			RECT info = {405, 172, 663, 194}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			BOOL can_craft = cooking_recipe_can_craft(recipe);
 			if (cooking_request_pending_) {
@@ -2939,7 +2952,9 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 				HBRUSH progress_border = CreateSolidBrush(RGB(120, 76, 41));
 				FrameRect(dc, &progress_bar, progress_border); DeleteObject(progress_border);
 				char progress_label[48];
-				wsprintfA(progress_label, progress < 100 ? "Preparing dish... %d%%" : "Finishing dish...", progress);
+				wsprintfA(progress_label, progress < 100 ?
+					(recipe->unlocked ? "Preparing dish... %d%%" : "Experimenting... %d%%") :
+					(recipe->unlocked ? "Finishing dish..." : "Testing combination..."), progress);
 				SetTextColor(dc, RGB(255, 241, 202));
 				DrawTextA(dc, progress_label, -1, &progress_bar, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			} else {
@@ -2951,7 +2966,9 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 				RECT cook_button = {536, 197, 660, 220};
 				fill_round(dc, cook_button, 5, can_craft ? RGB(151, 86, 42) : RGB(166, 153, 130));
 				SetTextColor(dc, can_craft ? RGB(255, 241, 202) : RGB(226, 216, 196));
-				const char* cook_label = cooking_mode_ < 1 ? "Chef required" : !recipe->unlocked ? "Locked" :
+				const char* cook_label = cooking_mode_ < 1 ? "Chef required" :
+					!recipe->unlocked && cooking_experiments_left_ < 1 ? "No attempts left" :
+					!recipe->unlocked ? (can_craft ? "Experiment" : "Missing items") :
 					can_craft ? "Cook" : "Missing items";
 				DrawTextA(dc, cook_label, -1, &cook_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			}
@@ -2972,13 +2989,19 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 				RECT amounts = {590, top, 660, top + 27}; DrawTextA(dc, line, -1, &amounts, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 			}
 			RECT failure = {408, 440, 660, 459};
-			const char* footer = cooking_request_pending_ ? "Preparing dish..." : "Select Cook to prepare this dish.";
+			const char* footer = cooking_request_pending_ ?
+				(recipe->unlocked ? "Preparing dish..." : "Testing this combination...") :
+				(recipe->unlocked ? "Select Cook to prepare this dish." : "Experimenting consumes the listed ingredients.");
 			COLORREF footer_color = RGB(92, 72, 48);
 			if (cooking_result_received_ && cooking_result_ == 0) { footer = "The dish could not be prepared."; footer_color = RGB(165, 55, 45); }
 			else if (cooking_result_received_ && cooking_result_ == 1) { footer = "Dish prepared successfully."; footer_color = RGB(35, 125, 72); }
 			else if (cooking_result_received_ && cooking_result_ == 2) { footer = "Cooking failed; ingredients consumed."; footer_color = RGB(165, 55, 45); }
 			else if (cooking_result_received_ && cooking_result_ == 3) { footer = "Cooking failed; ingredients preserved."; footer_color = RGB(165, 90, 35); }
 			else if (cooking_result_received_ && cooking_result_ == 4) { footer = "You no longer have the required items."; footer_color = RGB(165, 55, 45); }
+			else if (cooking_result_received_ && cooking_result_ == 5) { footer = "New recipe discovered!"; footer_color = RGB(35, 125, 72); }
+			else if (cooking_result_received_ && cooking_result_ == 6) { footer = "The combination produced no dish."; footer_color = RGB(165, 55, 45); }
+			else if (cooking_result_received_ && cooking_result_ == 7) { footer = "No experiment attempts remain today."; footer_color = RGB(165, 90, 35); }
+			else if (cooking_result_received_ && cooking_result_ == 8) { footer = "This recipe cannot be discovered by experimenting."; footer_color = RGB(165, 55, 45); }
 			SetTextColor(dc, footer_color);
 			DrawTextA(dc, footer, -1, &failure, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 		}
