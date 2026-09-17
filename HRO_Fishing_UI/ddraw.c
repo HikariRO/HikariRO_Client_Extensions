@@ -147,6 +147,7 @@ static int cooking_tail_len_;
 
 static HBITMAP load_fishing_background(const char* filename);
 static BOOL cooking_recipe_visible(int index);
+static void reset_cooking_page(void);
 
 static void byte_copy(void* output, const void* input, int length) {
 	BYTE* out = (BYTE*)output;
@@ -414,6 +415,7 @@ static void parse_cooking_payload(const char* payload) {
 			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 		}
 	} else if (payload[0] == 'O') {
+		reset_cooking_page();
 		InterlockedExchange(&cooking_book_open_, 1);
 		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 	}
