@@ -119,6 +119,8 @@ static int cooking_recipe_count_, cooking_expected_, cooking_category_count_;
 static int cooking_selected_, cooking_category_ = -1, cooking_page_;
 static int cooking_category_dropdown_, cooking_category_scroll_;
 static int cooking_item_details_open_;
+static int cooking_mode_, cooking_result_, cooking_request_pending_;
+static int cooking_requested_category_ = -1;
 static int cooking_first_paint_ = 1, cooking_image_load_budget_;
 static HBITMAP cooking_title_icon_;
 static int cooking_title_icon_attempted_;
@@ -280,10 +282,24 @@ static CookingRecipe* cooking_recipe_by_id(int id) {
 	return NULL;
 }
 
+static void release_cooking_catalog(void) {
+	for (int recipe_index = 0; recipe_index < cooking_recipe_count_; ++recipe_index) {
+		CookingRecipe* recipe = &cooking_recipes_[recipe_index];
+		if (recipe->image) DeleteObject(recipe->image);
+		if (recipe->collection_image) DeleteObject(recipe->collection_image);
+		for (int ingredient_index = 0; ingredient_index < 12; ++ingredient_index)
+			if (recipe->ingredients[ingredient_index].image)
+				DeleteObject(recipe->ingredients[ingredient_index].image);
+	}
+	ZeroMemory(cooking_recipes_, sizeof(cooking_recipes_));
+}
+
 static void parse_cooking_payload(const char* payload) {
 	if (payload[0] == 'B' && payload[1] == '|') {
-		int categories = 0, recipes = 0;
-		if (sscanf(payload + 2, "%d|%d", &categories, &recipes) == 2) {
+		int categories = 0, recipes = 0, mode = 0;
+		if (sscanf(payload + 2, "%d|%d|%d", &categories, &recipes, &mode) >= 2) {
+			cooking_mode_ = mode; cooking_result_ = 0;
+			release_cooking_catalog();
 			cooking_recipe_count_ = 0;
 			cooking_category_count_ = categories > 64 ? 64 : categories;
 			cooking_expected_ = recipes;
@@ -331,6 +347,24 @@ static void parse_cooking_payload(const char* payload) {
 					if (slot < 12) recipe->ingredients[slot] = ingredient;
 				}
 			}
+		}
+	} else if (payload[0] == 'S' && payload[1] == '|') {
+		int result = 0, recipe_id = 0;
+		if (sscanf(payload + 2, "%d|%d", &result, &recipe_id) == 2) {
+			cooking_result_ = result;
+			cooking_request_pending_ = 0;
+			cooking_category_ = cooking_requested_category_;
+			cooking_requested_category_ = -1;
+			int visible_position = 0;
+			for (int index = 0; index < cooking_recipe_count_; ++index) {
+				if (cooking_recipes_[index].id == recipe_id) {
+					cooking_selected_ = index;
+					cooking_page_ = visible_position / 6;
+					break;
+				}
+				if (cooking_category_ < 0 || cooking_recipes_[index].category == cooking_category_) ++visible_position;
+			}
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 		}
 	} else if (payload[0] == 'O') {
 		InterlockedExchange(&cooking_book_open_, 1);
@@ -2467,6 +2501,61 @@ static void reset_cooking_page(void) {
 	cooking_item_details_open_ = 0;
 }
 
+static BOOL cooking_recipe_can_craft(const CookingRecipe* recipe) {
+	if (!recipe || cooking_mode_ < 1 || !recipe->unlocked || cooking_request_pending_) return FALSE;
+	for (int index = 0; index < recipe->ingredient_count; ++index)
+		if (recipe->ingredients[index].owned < recipe->ingredients[index].required) return FALSE;
+	return TRUE;
+}
+
+static void cooking_send_virtual_key(WORD key) {
+	INPUT input[2];
+	ZeroMemory(input, sizeof(input));
+	input[0].type = input[1].type = INPUT_KEYBOARD;
+	input[0].ki.wVk = input[1].ki.wVk = key;
+	input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+	SendInput(2, input, sizeof(INPUT));
+}
+
+static void cooking_send_unicode_text(const char* text) {
+	for (int index = 0; text[index]; ++index) {
+		INPUT input[2];
+		ZeroMemory(input, sizeof(input));
+		input[0].type = input[1].type = INPUT_KEYBOARD;
+		input[0].ki.wScan = input[1].ki.wScan = (WORD)(unsigned char)text[index];
+		input[0].ki.dwFlags = KEYEVENTF_UNICODE;
+		input[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+		SendInput(2, input, sizeof(INPUT));
+	}
+}
+
+static DWORD WINAPI cooking_request_thread(void* parameter) {
+	const int recipe_id = (int)(INT_PTR)parameter;
+	char command[40];
+	wsprintfA(command, "@hrocook %d", recipe_id);
+	if (!game_ || !SetForegroundWindow(game_)) {
+		cooking_request_pending_ = 0;
+		return 0;
+	}
+	Sleep(60);
+	cooking_send_virtual_key(VK_RETURN);
+	Sleep(60);
+	cooking_send_unicode_text(command);
+	Sleep(30);
+	cooking_send_virtual_key(VK_RETURN);
+	return 0;
+}
+
+static void cooking_request_recipe(int recipe_id) {
+	if (recipe_id < 1 || cooking_request_pending_) return;
+	cooking_request_pending_ = 1;
+	cooking_result_ = 0;
+	cooking_requested_category_ = cooking_category_;
+	HANDLE thread = CreateThread(NULL, 0, cooking_request_thread, (void*)(INT_PTR)recipe_id, 0, NULL);
+	if (thread) CloseHandle(thread);
+	else cooking_request_pending_ = 0;
+}
+
 static void draw_client_item_description(HDC dc, const char* text, RECT* area) {
 	WCHAR wide[1024];
 	int converted;
@@ -2604,11 +2693,19 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 			SelectObject(dc, small_font); char line[128];
 			wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
 			RECT info = {405, 172, 663, 194}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-			RECT details_button = {474, 197, 594, 220}; fill_round(dc, details_button, 5, RGB(222, 199, 153));
+			RECT details_button = {408, 197, 528, 220}; fill_round(dc, details_button, 5, RGB(222, 199, 153));
 			HBRUSH details_border = CreateSolidBrush(RGB(154, 124, 78));
 			FrameRect(dc, &details_button, details_border); DeleteObject(details_border);
 			SetTextColor(dc, RGB(74, 48, 29));
-			DrawTextA(dc, "View item details", -1, &details_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			DrawTextA(dc, "Item details", -1, &details_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			BOOL can_craft = cooking_recipe_can_craft(recipe);
+			RECT cook_button = {536, 197, 660, 220};
+			fill_round(dc, cook_button, 5, can_craft ? RGB(151, 86, 42) : RGB(166, 153, 130));
+			SetTextColor(dc, can_craft ? RGB(255, 241, 202) : RGB(226, 216, 196));
+			const char* cook_label = cooking_request_pending_ ? "Cooking..." :
+				cooking_mode_ < 1 ? "Chef required" : !recipe->unlocked ? "Locked" :
+				can_craft ? "Cook" : "Missing items";
+			DrawTextA(dc, cook_label, -1, &cook_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			RECT separator = {405, 228, 663, 230}; fill_color(dc, separator, RGB(188, 154, 96));
 			SelectObject(dc, normal_font); SetTextColor(dc, RGB(76, 47, 25));
 			RECT ingredients_title = {408, 237, 660, 258}; DrawTextA(dc, "Required ingredients", -1, &ingredients_title, DT_LEFT | DT_SINGLELINE);
@@ -2626,8 +2723,14 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 				RECT amounts = {590, top, 660, top + 27}; DrawTextA(dc, line, -1, &amounts, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 			}
 			RECT failure = {408, 440, 660, 459};
-			SetTextColor(dc, recipe->consume_failure ? RGB(155, 58, 47) : RGB(43, 111, 73));
-			DrawTextA(dc, recipe->consume_failure ? "Failure consumes ingredients." : "Failure preserves ingredients.", -1, &failure, DT_LEFT | DT_SINGLELINE);
+			const char* footer = recipe->consume_failure ? "Failure consumes ingredients." : "Failure preserves ingredients.";
+			COLORREF footer_color = recipe->consume_failure ? RGB(155, 58, 47) : RGB(43, 111, 73);
+			if (cooking_result_ == 1) { footer = "Dish prepared successfully."; footer_color = RGB(35, 125, 72); }
+			else if (cooking_result_ == 2) { footer = "Cooking failed; ingredients consumed."; footer_color = RGB(165, 55, 45); }
+			else if (cooking_result_ == 3) { footer = "Cooking failed; ingredients preserved."; footer_color = RGB(165, 90, 35); }
+			else if (cooking_result_ == 4) { footer = "You no longer have the required items."; footer_color = RGB(165, 55, 45); }
+			SetTextColor(dc, footer_color);
+			DrawTextA(dc, footer, -1, &failure, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 		}
 	}
 	if (cooking_category_dropdown_) {
@@ -2675,7 +2778,7 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 		if (cooking_item_details_open_) {
 			cooking_item_details_open_ = 0; InvalidateRect(window, NULL, FALSE); return 0;
 		}
-		InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0;
+		cooking_mode_ = 0; InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0;
 	}
 	if (message == WM_MOUSEWHEEL && cooking_category_dropdown_) {
 		const int total_options = cooking_category_count_ + 1;
@@ -2689,7 +2792,7 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 	}
 	if (message == WM_LBUTTONDOWN) {
 		int x = LOWORD(l), y = HIWORD(l);
-		if (x >= 655 && x <= 687 && y >= 18 && y <= 50) { InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0; }
+		if (x >= 655 && x <= 687 && y >= 18 && y <= 50) { cooking_mode_ = 0; InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0; }
 		if (x >= 45 && x <= 334 && y >= 61 && y <= 87) {
 			cooking_category_dropdown_ = !cooking_category_dropdown_;
 			if (cooking_category_dropdown_) {
@@ -2714,8 +2817,17 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 			cooking_category_dropdown_ = 0;
 			InvalidateRect(window, NULL, FALSE); return 0;
 		}
-		if (!cooking_item_details_open_ && x >= 474 && x <= 594 && y >= 197 && y <= 220) {
+		if (!cooking_item_details_open_ && x >= 408 && x <= 528 && y >= 197 && y <= 220) {
 			cooking_item_details_open_ = 1; InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		if (!cooking_item_details_open_ && x >= 536 && x <= 660 && y >= 197 && y <= 220 &&
+			cooking_selected_ >= 0 && cooking_selected_ < cooking_recipe_count_) {
+			CookingRecipe* selected = &cooking_recipes_[cooking_selected_];
+			if (cooking_recipe_can_craft(selected)) {
+				cooking_request_recipe(selected->id);
+				InvalidateRect(window, NULL, FALSE);
+			}
+			return 0;
 		}
 		if (cooking_item_details_open_ && x >= 469 && x <= 599 && y >= 414 && y <= 441) {
 			cooking_item_details_open_ = 0; InvalidateRect(window, NULL, FALSE); return 0;
@@ -2903,7 +3015,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.0 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.1 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
