@@ -2962,7 +2962,8 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 				HBRUSH details_border = CreateSolidBrush(RGB(154, 124, 78));
 				FrameRect(dc, &details_button, details_border); DeleteObject(details_border);
 				SetTextColor(dc, RGB(74, 48, 29));
-				DrawTextA(dc, "Item details", -1, &details_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				DrawTextA(dc, recipe->unlocked ? "Item details" : "Details hidden", -1,
+					&details_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 				RECT cook_button = {536, 197, 660, 220};
 				fill_round(dc, cook_button, 5, can_craft ? RGB(151, 86, 42) : RGB(166, 153, 130));
 				SetTextColor(dc, can_craft ? RGB(255, 241, 202) : RGB(226, 216, 196));
@@ -3095,7 +3096,9 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 			cooking_category_dropdown_ = 0;
 			InvalidateRect(window, NULL, FALSE); return 0;
 		}
-		if (!cooking_item_details_open_ && x >= 408 && x <= 528 && y >= 197 && y <= 220) {
+		if (!cooking_item_details_open_ && x >= 408 && x <= 528 && y >= 197 && y <= 220 &&
+			cooking_selected_ >= 0 && cooking_selected_ < cooking_recipe_count_ &&
+			cooking_recipes_[cooking_selected_].unlocked) {
 			cooking_item_details_open_ = 1; InvalidateRect(window, NULL, FALSE); return 0;
 		}
 		if (!cooking_item_details_open_ && x >= 536 && x <= 660 && y >= 197 && y <= 220 &&
