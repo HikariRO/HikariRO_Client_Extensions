@@ -2591,6 +2591,7 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 			cooking_result_ = 0;
 			cooking_result_received_ = 1;
 			cooking_request_pending_ = 0;
+			InterlockedExchange(&cooking_progress_start_, 0);
 			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 		}
 		return 0;
