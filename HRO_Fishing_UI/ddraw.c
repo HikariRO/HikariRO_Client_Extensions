@@ -2678,13 +2678,13 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 		!cooking_request_pending_) return 0;
 	if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 
-	// After the first successful client-generated command, repeat the same
-	// recipe through its captured packet and avoid RO chat state entirely.
-	if (cooking_replay_command(command)) {
-		Sleep(5000);
-		if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0) &&
-			cooking_request_pending_) {
-			log_line("Recipe Book replay timed out without a server result.");
+	// Packet replay is not safe with rAthena packet-header obfuscation: the
+	// encoded header changes as the session advances. Always let the client
+	// generate a fresh chat packet. The preparation animation lasts 2.5 seconds,
+	// so reacquire focus here, immediately before opening the chat input.
+	if (!cooking_focus_game()) {
+		log_line("Recipe Book request failed: game lost focus before command delivery.");
+		if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0)) {
 			cooking_result_ = 0;
 			cooking_result_received_ = 1;
 			cooking_request_pending_ = 0;
@@ -2693,8 +2693,8 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 		}
 		return 0;
 	}
+	log_line("Recipe Book game focus restored immediately before command delivery.");
 
-	// The Recipe Book click leaves keyboard focus outside the RO chat input.
 	// Enter opens chat; Escape must not be sent because RO uses it for Game Options.
 	Sleep(120);
 	cooking_send_virtual_key(VK_RETURN);
@@ -3217,7 +3217,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.2 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.3 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
