@@ -2597,8 +2597,11 @@ static LRESULT CALLBACK card_album_proc(HWND window, UINT message, WPARAM w, LPA
 }
 
 static BOOL cooking_recipe_visible(int index) {
-	return index >= 0 && index < cooking_recipe_count_ &&
-		(cooking_category_ < 0 || cooking_recipes_[index].category == cooking_category_);
+	if (index < 0 || index >= cooking_recipe_count_) return FALSE;
+	const CookingRecipe* recipe = &cooking_recipes_[index];
+	if (cooking_category_ == -2) return !recipe->unlocked && recipe->experiment;
+	if (!recipe->unlocked) return FALSE;
+	return cooking_category_ < 0 || recipe->category == cooking_category_;
 }
 
 static int visible_cooking_count(void) {
@@ -2842,7 +2845,8 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 	FrameRect(dc, &category_box, category_border); DeleteObject(category_border);
 	SetTextColor(dc, RGB(64, 42, 23));
 	RECT category_label = {55, 61, 299, 87};
-	const char* selected_category = cooking_category_ < 0 ? "All recipes" : cooking_categories_[cooking_category_];
+	const char* selected_category = cooking_category_ == -2 ? "Unknown Recipes" :
+		cooking_category_ < 0 ? "All recipes" : cooking_categories_[cooking_category_];
 	DrawTextA(dc, selected_category, -1, &category_label, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 	RECT category_arrow = {301, 61, 328, 87};
 	DrawTextA(dc, cooking_category_dropdown_ ? "^" : "v", -1, &category_arrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -2974,7 +2978,7 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 		}
 	}
 	if (cooking_category_dropdown_) {
-		const int total_options = cooking_category_count_ + 1;
+		const int total_options = cooking_category_count_ + 2;
 		const int visible_options = total_options < 10 ? total_options : 10;
 		RECT dropdown_shadow = {48, 93, 338, 97 + visible_options * 28};
 		fill_round(dc, dropdown_shadow, 5, RGB(91, 57, 31));
@@ -2985,11 +2989,14 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 			int option = cooking_category_scroll_ + row;
 			if (option >= total_options) break;
 			RECT option_box = {48, 93 + row * 28, 321, 120 + row * 28};
-			if (option - 1 == cooking_category_) fill_color(dc, option_box, RGB(225, 190, 111));
+			int option_category = option == 0 ? -1 : option == 1 ? -2 : option - 2;
+			if (option_category == cooking_category_) fill_color(dc, option_box, RGB(225, 190, 111));
 			SetTextColor(dc, RGB(65, 43, 25));
 			RECT option_text = {57, 93 + row * 28, 312, 120 + row * 28};
-			DrawTextA(dc, option == 0 ? "All recipes" : cooking_categories_[option - 1], -1,
-				&option_text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+			const char* option_name = option == 0 ? "All recipes" :
+				option == 1 ? "Unknown Recipes" : cooking_categories_[option - 2];
+			DrawTextA(dc, option_name, -1, &option_text,
+				DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 		}
 		if (total_options > visible_options) {
 			RECT scroll_track = {322, 95, 330, 90 + visible_options * 28};
@@ -3021,7 +3028,7 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 		cooking_mode_ = 0; InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0;
 	}
 	if (message == WM_MOUSEWHEEL && cooking_category_dropdown_) {
-		const int total_options = cooking_category_count_ + 1;
+		const int total_options = cooking_category_count_ + 2;
 		const int visible_options = total_options < 10 ? total_options : 10;
 		const int maximum_scroll = total_options - visible_options;
 		if (GET_WHEEL_DELTA_WPARAM(w) < 0 && cooking_category_scroll_ < maximum_scroll)
@@ -3036,21 +3043,23 @@ static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, L
 		if (x >= 45 && x <= 334 && y >= 61 && y <= 87) {
 			cooking_category_dropdown_ = !cooking_category_dropdown_;
 			if (cooking_category_dropdown_) {
-				int selected_option = cooking_category_ + 1;
+				int selected_option = cooking_category_ == -1 ? 0 :
+					cooking_category_ == -2 ? 1 : cooking_category_ + 2;
 				if (selected_option < cooking_category_scroll_) cooking_category_scroll_ = selected_option;
 				if (selected_option >= cooking_category_scroll_ + 10) cooking_category_scroll_ = selected_option - 9;
 			}
 			InvalidateRect(window, NULL, FALSE); return 0;
 		}
 		if (cooking_category_dropdown_) {
-			const int total_options = cooking_category_count_ + 1;
+			const int total_options = cooking_category_count_ + 2;
 			const int visible_options = total_options < 10 ? total_options : 10;
 			if (x >= 45 && x <= 334 && y >= 90 && y < 94 + visible_options * 28) {
 				int row = (y - 93) / 28;
 				if (row < 0) row = 0;
 				int option = cooking_category_scroll_ + row;
 				if (option < total_options) {
-					cooking_category_ = option - 1; cooking_category_dropdown_ = 0; reset_cooking_page();
+					cooking_category_ = option == 0 ? -1 : option == 1 ? -2 : option - 2;
+					cooking_category_dropdown_ = 0; reset_cooking_page();
 				}
 				InvalidateRect(window, NULL, FALSE); return 0;
 			}
