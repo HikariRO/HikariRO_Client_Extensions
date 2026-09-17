@@ -102,7 +102,7 @@ typedef struct CookingIngredient {
 } CookingIngredient;
 
 typedef struct CookingRecipe {
-	int id, category, product_id, amount, success_rate, consume_failure, unlocked, recipe_item;
+	int id, category, product_id, amount, success_rate, consume_failure, unlocked, recipe_item, experiment;
 	char name[64], resource_name[64];
 	CookingIngredient ingredients[12];
 	int ingredient_count;
@@ -123,6 +123,7 @@ static int cooking_category_dropdown_, cooking_category_scroll_;
 static int cooking_item_details_open_;
 static int cooking_mode_, cooking_result_, cooking_result_received_, cooking_request_pending_;
 static unsigned long cooking_session_token_;
+static int cooking_experiments_left_;
 static volatile LONG cooking_request_serial_;
 static volatile LONG cooking_progress_start_;
 static volatile LONG cooking_chat_input_ready_;
@@ -313,11 +314,13 @@ static void release_cooking_catalog(void) {
 
 static void parse_cooking_payload(const char* payload) {
 	if (payload[0] == 'B' && payload[1] == '|') {
-		int categories = 0, recipes = 0, mode = 0;
+		int categories = 0, recipes = 0, mode = 0, experiments_left = 0;
 		unsigned long session_token = 0;
-		if (sscanf(payload + 2, "%d|%d|%d|%lu", &categories, &recipes, &mode, &session_token) >= 2) {
+		if (sscanf(payload + 2, "%d|%d|%d|%lu|%d", &categories, &recipes, &mode,
+			&session_token, &experiments_left) >= 2) {
 			cooking_mode_ = mode;
 			cooking_session_token_ = session_token;
+			cooking_experiments_left_ = experiments_left;
 			if (!cooking_request_pending_) { cooking_result_ = 0; cooking_result_received_ = 0; }
 			release_cooking_catalog();
 			cooking_recipe_count_ = 0;
@@ -336,9 +339,9 @@ static void parse_cooking_payload(const char* payload) {
 		if (sscanf(payload + 2, "%d|%31[^|]", &index, name) == 2 && index >= 0 && index < 64)
 			lstrcpynA(cooking_categories_[index], name, sizeof(cooking_categories_[index]));
 	} else if (payload[0] == 'R' && payload[1] == '|' && cooking_recipe_count_ < 256) {
-		char record[512]; char* field[11];
+		char record[512]; char* field[12];
 		lstrcpynA(record, payload + 2, sizeof(record));
-		if (split_fields(record, field, 11) == 11) {
+		if (split_fields(record, field, 12) == 12) {
 			CookingRecipe entry = {0};
 			if (sscanf(field[0], "%d", &entry.id) == 1 && sscanf(field[1], "%d", &entry.category) == 1 &&
 				sscanf(field[2], "%d", &entry.product_id) == 1 && sscanf(field[3], "%d", &entry.amount) == 1 &&
@@ -347,6 +350,7 @@ static void parse_cooking_payload(const char* payload) {
 				sscanf(field[8], "%d", &entry.ingredient_count) == 1) {
 				lstrcpynA(entry.name, field[9], sizeof(entry.name));
 				lstrcpynA(entry.resource_name, field[10], sizeof(entry.resource_name));
+				sscanf(field[11], "%d", &entry.experiment);
 				if (entry.ingredient_count > 12) entry.ingredient_count = 12;
 				cooking_recipes_[cooking_recipe_count_++] = entry;
 			}
@@ -382,11 +386,16 @@ static void parse_cooking_payload(const char* payload) {
 			}
 			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 		}
+	} else if (payload[0] == 'L' && payload[1] == '|') {
+		sscanf(payload + 2, "%d", &cooking_experiments_left_);
+		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 	} else if (payload[0] == 'S' && payload[1] == '|') {
 		int result = 0, recipe_id = 0;
 		if (sscanf(payload + 2, "%d|%d", &result, &recipe_id) == 2) {
 			cooking_result_ = result;
 			cooking_result_received_ = 1;
+			CookingRecipe* result_recipe = cooking_recipe_by_id(recipe_id);
+			if (result == 5 && result_recipe) result_recipe->unlocked = 1;
 			cooking_request_pending_ = 0;
 			InterlockedExchange(&cooking_progress_start_, 0);
 			cooking_category_ = cooking_requested_category_;
@@ -3246,7 +3255,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.6 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V27.0 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
