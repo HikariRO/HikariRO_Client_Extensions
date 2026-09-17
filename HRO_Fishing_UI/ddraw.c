@@ -11,12 +11,14 @@
 typedef HRESULT (WINAPI *CreateFn)(GUID*, void**, REFIID, void*);
 typedef HRESULT (WINAPI *EnumFn)(void*, void*, DWORD);
 typedef int (WSAAPI *RecvFn)(SOCKET, char*, int, int);
+typedef int (WSAAPI *SendFn)(SOCKET, const char*, int, int);
 typedef int (WSAAPI *WSARecvFn)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD,
 	LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE);
 static HMODULE real_ddraw;
 static CreateFn real_create;
 static EnumFn real_enum;
 static RecvFn real_recv;
+static SendFn real_send;
 static WSARecvFn real_wsarecv;
 static volatile LONG state_, tension_, distance_, resistance_, action_;
 static volatile LONG fishing_level_, fishing_exp_, fishing_next_exp_;
@@ -123,6 +125,11 @@ static int cooking_mode_, cooking_result_, cooking_result_received_, cooking_req
 static volatile LONG cooking_request_serial_;
 static volatile LONG cooking_progress_start_;
 static const DWORD COOKING_PROGRESS_DURATION_MS = 2500;
+static SOCKET cooking_command_socket_ = INVALID_SOCKET;
+static BYTE cooking_command_packet_[512];
+static volatile LONG cooking_command_packet_length_;
+static char cooking_command_text_[40];
+static int cooking_command_send_flags_;
 static int cooking_requested_category_ = -1;
 
 typedef struct CookingRequest {
@@ -750,6 +757,65 @@ static int WSAAPI hooked_recv(SOCKET s, char* buffer, int length, int flags) {
 	}
 }
 
+static int WSAAPI hooked_send(SOCKET socket, const char* buffer, int length, int flags) {
+	// Keep the exact client-generated packet for a successful Recipe Book
+	// command. Replaying this packet avoids reopening RO's chat for repeats.
+	static const char prefix[] = "@hrocook ";
+	for (int command_offset = 0; command_offset + (int)sizeof(prefix) - 1 < length; ++command_offset) {
+		if (memcmp(buffer + command_offset, prefix, sizeof(prefix) - 1) != 0) continue;
+		int packet_start = -1, packet_length = 0;
+		for (int candidate = command_offset; candidate >= 0; --candidate) {
+			if (candidate + 4 > length) continue;
+			int declared = (unsigned char)buffer[candidate + 2] |
+				((unsigned char)buffer[candidate + 3] << 8);
+			if (declared >= 4 && declared <= (int)sizeof(cooking_command_packet_) &&
+				candidate + declared <= length && command_offset < candidate + declared) {
+				packet_start = candidate;
+				packet_length = declared;
+			}
+		}
+		if (packet_start < 0 && length <= (int)sizeof(cooking_command_packet_)) {
+			packet_start = 0;
+			packet_length = length;
+		}
+		if (packet_start >= 0) {
+			InterlockedExchange(&cooking_command_packet_length_, 0);
+			CopyMemory(cooking_command_packet_, buffer + packet_start, packet_length);
+			int command_length = packet_start + packet_length - command_offset;
+			if (command_length >= (int)sizeof(cooking_command_text_)) command_length = sizeof(cooking_command_text_) - 1;
+			CopyMemory(cooking_command_text_, buffer + command_offset, command_length);
+			cooking_command_text_[command_length] = '\0';
+			// Modern packets may not terminate chat text; trim any non-command tail.
+			for (int i = (int)sizeof(prefix) - 1; cooking_command_text_[i]; ++i)
+				if (cooking_command_text_[i] < '0' || cooking_command_text_[i] > '9') {
+					cooking_command_text_[i] = '\0';
+					break;
+				}
+			cooking_command_socket_ = socket;
+			cooking_command_send_flags_ = flags;
+			InterlockedExchange(&cooking_command_packet_length_, packet_length);
+			log_line("Recipe Book command packet captured for reliable repeats.");
+		}
+		break;
+	}
+	return real_send(socket, buffer, length, flags);
+}
+
+static BOOL cooking_replay_command(const char* command) {
+	LONG length = InterlockedCompareExchange(&cooking_command_packet_length_, 0, 0);
+	if (!real_send || cooking_command_socket_ == INVALID_SOCKET || length <= 0 ||
+		lstrcmpA(command, cooking_command_text_) != 0)
+		return FALSE;
+	int sent = real_send(cooking_command_socket_, (const char*)cooking_command_packet_,
+		(int)length, cooking_command_send_flags_);
+	if (sent == length) {
+		log_line("Recipe Book command packet replayed without using chat.");
+		return TRUE;
+	}
+	log_line("Recipe Book command replay failed; falling back to chat input.");
+	return FALSE;
+}
+
 static int WSAAPI hooked_wsarecv(SOCKET socket, LPWSABUF buffers, DWORD count,
 	LPDWORD received, LPDWORD flags, LPWSAOVERLAPPED overlapped,
 	LPWSAOVERLAPPED_COMPLETION_ROUTINE completion) {
@@ -819,20 +885,22 @@ static void hook_recv(void) {
 	HMODULE ws = GetModuleHandleA("ws2_32.dll");
 	if (!ws) return;
 	real_recv = (RecvFn)GetProcAddress(ws, "recv");
+	real_send = (SendFn)GetProcAddress(ws, "send");
 	real_wsarecv = (WSARecvFn)GetProcAddress(ws, "WSARecv");
-	int recv_count = 0, wsarecv_count = 0;
+	int recv_count = 0, send_count = 0, wsarecv_count = 0;
 	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
 	if (snapshot != INVALID_HANDLE_VALUE) {
 		MODULEENTRY32 entry = {0};
 		entry.dwSize = sizeof(entry);
 		if (Module32First(snapshot, &entry)) do {
 			recv_count += replace_imports(entry.hModule, (void*)real_recv, (void*)hooked_recv);
+			send_count += replace_imports(entry.hModule, (void*)real_send, (void*)hooked_send);
 			wsarecv_count += replace_imports(entry.hModule, (void*)real_wsarecv, (void*)hooked_wsarecv);
 		} while (Module32Next(snapshot, &entry));
 		CloseHandle(snapshot);
 	}
 	char message[96];
-	wsprintfA(message, "Network hooks installed: recv=%d, WSARecv=%d.", recv_count, wsarecv_count);
+	wsprintfA(message, "Network hooks installed: recv=%d, send=%d, WSARecv=%d.", recv_count, send_count, wsarecv_count);
 	log_line(message);
 }
 
@@ -2609,6 +2677,22 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 	if (request_serial != InterlockedCompareExchange(&cooking_request_serial_, 0, 0) ||
 		!cooking_request_pending_) return 0;
 	if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+
+	// After the first successful client-generated command, repeat the same
+	// recipe through its captured packet and avoid RO chat state entirely.
+	if (cooking_replay_command(command)) {
+		Sleep(5000);
+		if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0) &&
+			cooking_request_pending_) {
+			log_line("Recipe Book replay timed out without a server result.");
+			cooking_result_ = 0;
+			cooking_result_received_ = 1;
+			cooking_request_pending_ = 0;
+			InterlockedExchange(&cooking_progress_start_, 0);
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
+		return 0;
+	}
 
 	// The Recipe Book click leaves keyboard focus outside the RO chat input.
 	// Enter opens chat; Escape must not be sent because RO uses it for Game Options.
