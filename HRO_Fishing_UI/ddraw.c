@@ -747,11 +747,32 @@ static int WSAAPI hooked_wsarecv(SOCKET socket, LPWSABUF buffers, DWORD count,
 	InterlockedIncrement(&wsarecv_calls_);
 	int result = real_wsarecv(socket, buffers, count, received, flags, overlapped, completion);
 	if (result == 0 && received && *received > 0 && !overlapped) {
-		DWORD remaining = *received;
-		for (DWORD i = 0; i < count && remaining; ++i) {
-			int length = (int)(buffers[i].len < remaining ? buffers[i].len : remaining);
-			if (length > 0) parse_marker(buffers[i].buf, length);
-			remaining -= (DWORD)length;
+		const DWORD original_length = *received;
+		char* contiguous = (char*)HeapAlloc(GetProcessHeap(), 0, original_length);
+		if (contiguous) {
+			DWORD copied = 0;
+			for (DWORD i = 0; i < count && copied < original_length; ++i) {
+				DWORD chunk = buffers[i].len < original_length - copied ? buffers[i].len : original_length - copied;
+				if (chunk > 0) CopyMemory(contiguous + copied, buffers[i].buf, chunk);
+				copied += chunk;
+			}
+			parse_marker(contiguous, (int)copied);
+			DWORD kept = (DWORD)strip_card_chat_packets(contiguous, (int)copied);
+			DWORD source = 0;
+			for (DWORD i = 0; i < count && source < kept; ++i) {
+				DWORD chunk = buffers[i].len < kept - source ? buffers[i].len : kept - source;
+				if (chunk > 0) CopyMemory(buffers[i].buf, contiguous + source, chunk);
+				source += chunk;
+			}
+			*received = kept;
+			HeapFree(GetProcessHeap(), 0, contiguous);
+		} else {
+			// Preserve normal network data if temporary allocation is unavailable.
+			DWORD remaining = original_length;
+			for (DWORD i = 0; i < count && remaining; ++i) {
+				DWORD chunk = buffers[i].len < remaining ? buffers[i].len : remaining;
+				remaining -= chunk;
+			}
 		}
 	}
 	return result;
