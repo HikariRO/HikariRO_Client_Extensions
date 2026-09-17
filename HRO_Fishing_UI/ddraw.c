@@ -119,7 +119,7 @@ static int cooking_recipe_count_, cooking_expected_, cooking_category_count_;
 static int cooking_selected_, cooking_category_ = -1, cooking_page_;
 static int cooking_category_dropdown_, cooking_category_scroll_;
 static int cooking_item_details_open_;
-static int cooking_mode_, cooking_result_, cooking_request_pending_;
+static int cooking_mode_, cooking_result_, cooking_result_received_, cooking_request_pending_;
 static int cooking_requested_category_ = -1;
 static int cooking_first_paint_ = 1, cooking_image_load_budget_;
 static HBITMAP cooking_title_icon_;
@@ -298,7 +298,8 @@ static void parse_cooking_payload(const char* payload) {
 	if (payload[0] == 'B' && payload[1] == '|') {
 		int categories = 0, recipes = 0, mode = 0;
 		if (sscanf(payload + 2, "%d|%d|%d", &categories, &recipes, &mode) >= 2) {
-			cooking_mode_ = mode; cooking_result_ = 0;
+			cooking_mode_ = mode;
+			if (!cooking_request_pending_) { cooking_result_ = 0; cooking_result_received_ = 0; }
 			release_cooking_catalog();
 			cooking_recipe_count_ = 0;
 			cooking_category_count_ = categories > 64 ? 64 : categories;
@@ -352,6 +353,7 @@ static void parse_cooking_payload(const char* payload) {
 		int result = 0, recipe_id = 0;
 		if (sscanf(payload + 2, "%d|%d", &result, &recipe_id) == 2) {
 			cooking_result_ = result;
+			cooking_result_received_ = 1;
 			cooking_request_pending_ = 0;
 			cooking_category_ = cooking_requested_category_;
 			cooking_requested_category_ = -1;
@@ -2550,6 +2552,7 @@ static void cooking_request_recipe(int recipe_id) {
 	if (recipe_id < 1 || cooking_request_pending_) return;
 	cooking_request_pending_ = 1;
 	cooking_result_ = 0;
+	cooking_result_received_ = 0;
 	cooking_requested_category_ = cooking_category_;
 	HANDLE thread = CreateThread(NULL, 0, cooking_request_thread, (void*)(INT_PTR)recipe_id, 0, NULL);
 	if (thread) CloseHandle(thread);
@@ -2723,12 +2726,13 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 				RECT amounts = {590, top, 660, top + 27}; DrawTextA(dc, line, -1, &amounts, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 			}
 			RECT failure = {408, 440, 660, 459};
-			const char* footer = recipe->consume_failure ? "Failure consumes ingredients." : "Failure preserves ingredients.";
-			COLORREF footer_color = recipe->consume_failure ? RGB(155, 58, 47) : RGB(43, 111, 73);
-			if (cooking_result_ == 1) { footer = "Dish prepared successfully."; footer_color = RGB(35, 125, 72); }
-			else if (cooking_result_ == 2) { footer = "Cooking failed; ingredients consumed."; footer_color = RGB(165, 55, 45); }
-			else if (cooking_result_ == 3) { footer = "Cooking failed; ingredients preserved."; footer_color = RGB(165, 90, 35); }
-			else if (cooking_result_ == 4) { footer = "You no longer have the required items."; footer_color = RGB(165, 55, 45); }
+			const char* footer = cooking_request_pending_ ? "Preparing dish..." : "Select Cook to prepare this dish.";
+			COLORREF footer_color = RGB(92, 72, 48);
+			if (cooking_result_received_ && cooking_result_ == 0) { footer = "The dish could not be prepared."; footer_color = RGB(165, 55, 45); }
+			else if (cooking_result_received_ && cooking_result_ == 1) { footer = "Dish prepared successfully."; footer_color = RGB(35, 125, 72); }
+			else if (cooking_result_received_ && cooking_result_ == 2) { footer = "Cooking failed; ingredients consumed."; footer_color = RGB(165, 55, 45); }
+			else if (cooking_result_received_ && cooking_result_ == 3) { footer = "Cooking failed; ingredients preserved."; footer_color = RGB(165, 90, 35); }
+			else if (cooking_result_received_ && cooking_result_ == 4) { footer = "You no longer have the required items."; footer_color = RGB(165, 55, 45); }
 			SetTextColor(dc, footer_color);
 			DrawTextA(dc, footer, -1, &failure, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 		}
@@ -3015,7 +3019,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.1 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.2 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
