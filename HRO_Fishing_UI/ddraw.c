@@ -146,6 +146,7 @@ static BYTE cooking_tail_[512];
 static int cooking_tail_len_;
 
 static HBITMAP load_fishing_background(const char* filename);
+static BOOL cooking_recipe_visible(int index);
 
 static void byte_copy(void* output, const void* input, int length) {
 	BYTE* out = (BYTE*)output;
