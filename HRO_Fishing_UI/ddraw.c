@@ -124,6 +124,7 @@ static int cooking_item_details_open_;
 static int cooking_mode_, cooking_result_, cooking_result_received_, cooking_request_pending_;
 static volatile LONG cooking_request_serial_;
 static volatile LONG cooking_progress_start_;
+static volatile LONG cooking_chat_input_ready_;
 static const DWORD COOKING_PROGRESS_DURATION_MS = 2500;
 static SOCKET cooking_command_socket_ = INVALID_SOCKET;
 static BYTE cooking_command_packet_[512];
@@ -2695,13 +2696,22 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 	}
 	log_line("Recipe Book game focus restored immediately before command delivery.");
 
-	// Enter opens chat; Escape must not be sent because RO uses it for Game Options.
+	// RO keeps its chat edit active after the first submitted command. Opening it
+	// again with Enter would close the empty edit, making the following text go
+	// to gameplay shortcuts instead of chat. Open it only for the first request;
+	// repeats write directly into the already active edit.
 	Sleep(120);
-	cooking_send_virtual_key(VK_RETURN);
-	Sleep(120);
+	if (!InterlockedCompareExchange(&cooking_chat_input_ready_, 0, 0)) {
+		cooking_send_virtual_key(VK_RETURN);
+		Sleep(120);
+		log_line("Recipe Book opened the chat input for its first command.");
+	} else {
+		log_line("Recipe Book reused the active chat input.");
+	}
 	cooking_send_unicode_text(command);
 	Sleep(80);
 	cooking_send_virtual_key(VK_RETURN);
+	InterlockedExchange(&cooking_chat_input_ready_, 1);
 
 	// Only this exact request may time itself out. An older worker must never
 	// cancel a later repeated cooking attempt that is already in progress.
@@ -3217,7 +3227,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.3 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V26.4 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
