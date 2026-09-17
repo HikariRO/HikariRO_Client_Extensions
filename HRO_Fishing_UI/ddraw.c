@@ -121,6 +121,8 @@ static int cooking_category_dropdown_, cooking_category_scroll_;
 static int cooking_item_details_open_;
 static int cooking_mode_, cooking_result_, cooking_result_received_, cooking_request_pending_;
 static volatile LONG cooking_request_serial_;
+static volatile LONG cooking_progress_start_;
+static const DWORD COOKING_PROGRESS_DURATION_MS = 2500;
 static int cooking_requested_category_ = -1;
 
 typedef struct CookingRequest {
@@ -361,6 +363,7 @@ static void parse_cooking_payload(const char* payload) {
 			cooking_result_ = result;
 			cooking_result_received_ = 1;
 			cooking_request_pending_ = 0;
+			InterlockedExchange(&cooking_progress_start_, 0);
 			cooking_category_ = cooking_requested_category_;
 			cooking_requested_category_ = -1;
 			int visible_position = 0;
@@ -2592,6 +2595,20 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 		}
 		return 0;
 	}
+	// Give the recipe a visible preparation phase before asking the server to
+	// consume ingredients. The server revalidates the inventory at completion.
+	DWORD progress_started = (DWORD)InterlockedCompareExchange(&cooking_progress_start_, 0, 0);
+	while (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0) &&
+		cooking_request_pending_) {
+		DWORD elapsed = GetTickCount() - progress_started;
+		if (elapsed >= COOKING_PROGRESS_DURATION_MS) break;
+		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		Sleep(33);
+	}
+	if (request_serial != InterlockedCompareExchange(&cooking_request_serial_, 0, 0) ||
+		!cooking_request_pending_) return 0;
+	if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+
 	// The Recipe Book click leaves keyboard focus outside the RO chat input.
 	// Enter opens chat; Escape must not be sent because RO uses it for Game Options.
 	Sleep(120);
@@ -2610,6 +2627,7 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 		cooking_result_ = 0;
 		cooking_result_received_ = 1;
 		cooking_request_pending_ = 0;
+		InterlockedExchange(&cooking_progress_start_, 0);
 		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 	}
 	return 0;
@@ -2622,6 +2640,7 @@ static void cooking_request_recipe(int recipe_id) {
 	request->recipe_id = recipe_id;
 	request->serial = InterlockedIncrement(&cooking_request_serial_);
 	cooking_request_pending_ = 1;
+	InterlockedExchange(&cooking_progress_start_, (LONG)GetTickCount());
 	cooking_result_ = 0;
 	cooking_result_received_ = 0;
 	cooking_requested_category_ = cooking_category_;
@@ -2630,6 +2649,7 @@ static void cooking_request_recipe(int recipe_id) {
 	else {
 		HeapFree(GetProcessHeap(), 0, request);
 		cooking_request_pending_ = 0;
+		InterlockedExchange(&cooking_progress_start_, 0);
 	}
 }
 
@@ -2770,19 +2790,38 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 			SelectObject(dc, small_font); char line[128];
 			wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
 			RECT info = {405, 172, 663, 194}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-			RECT details_button = {408, 197, 528, 220}; fill_round(dc, details_button, 5, RGB(222, 199, 153));
-			HBRUSH details_border = CreateSolidBrush(RGB(154, 124, 78));
-			FrameRect(dc, &details_button, details_border); DeleteObject(details_border);
-			SetTextColor(dc, RGB(74, 48, 29));
-			DrawTextA(dc, "Item details", -1, &details_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			BOOL can_craft = cooking_recipe_can_craft(recipe);
-			RECT cook_button = {536, 197, 660, 220};
-			fill_round(dc, cook_button, 5, can_craft ? RGB(151, 86, 42) : RGB(166, 153, 130));
-			SetTextColor(dc, can_craft ? RGB(255, 241, 202) : RGB(226, 216, 196));
-			const char* cook_label = cooking_request_pending_ ? "Cooking..." :
-				cooking_mode_ < 1 ? "Chef required" : !recipe->unlocked ? "Locked" :
-				can_craft ? "Cook" : "Missing items";
-			DrawTextA(dc, cook_label, -1, &cook_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			if (cooking_request_pending_) {
+				RECT progress_bar = {408, 197, 660, 220};
+				fill_round(dc, progress_bar, 5, RGB(191, 174, 142));
+				DWORD started = (DWORD)InterlockedCompareExchange(&cooking_progress_start_, 0, 0);
+				DWORD elapsed = started ? GetTickCount() - started : 0;
+				int progress = elapsed >= COOKING_PROGRESS_DURATION_MS ? 100 :
+					(int)(elapsed * 100 / COOKING_PROGRESS_DURATION_MS);
+				RECT progress_fill = progress_bar;
+				progress_fill.right = progress_fill.left +
+					(progress_fill.right - progress_fill.left) * progress / 100;
+				if (progress_fill.right > progress_fill.left)
+					fill_round(dc, progress_fill, 5, RGB(151, 86, 42));
+				HBRUSH progress_border = CreateSolidBrush(RGB(120, 76, 41));
+				FrameRect(dc, &progress_bar, progress_border); DeleteObject(progress_border);
+				char progress_label[48];
+				wsprintfA(progress_label, progress < 100 ? "Preparing dish... %d%%" : "Finishing dish...", progress);
+				SetTextColor(dc, RGB(255, 241, 202));
+				DrawTextA(dc, progress_label, -1, &progress_bar, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			} else {
+				RECT details_button = {408, 197, 528, 220}; fill_round(dc, details_button, 5, RGB(222, 199, 153));
+				HBRUSH details_border = CreateSolidBrush(RGB(154, 124, 78));
+				FrameRect(dc, &details_button, details_border); DeleteObject(details_border);
+				SetTextColor(dc, RGB(74, 48, 29));
+				DrawTextA(dc, "Item details", -1, &details_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				RECT cook_button = {536, 197, 660, 220};
+				fill_round(dc, cook_button, 5, can_craft ? RGB(151, 86, 42) : RGB(166, 153, 130));
+				SetTextColor(dc, can_craft ? RGB(255, 241, 202) : RGB(226, 216, 196));
+				const char* cook_label = cooking_mode_ < 1 ? "Chef required" : !recipe->unlocked ? "Locked" :
+					can_craft ? "Cook" : "Missing items";
+				DrawTextA(dc, cook_label, -1, &cook_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			}
 			RECT separator = {405, 228, 663, 230}; fill_color(dc, separator, RGB(188, 154, 96));
 			SelectObject(dc, normal_font); SetTextColor(dc, RGB(76, 47, 25));
 			RECT ingredients_title = {408, 237, 660, 258}; DrawTextA(dc, "Required ingredients", -1, &ingredients_title, DT_LEFT | DT_SINGLELINE);
