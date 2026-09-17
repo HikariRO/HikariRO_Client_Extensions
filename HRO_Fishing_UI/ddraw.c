@@ -2528,23 +2528,56 @@ static void cooking_send_unicode_text(const char* text) {
 		input[0].ki.dwFlags = KEYEVENTF_UNICODE;
 		input[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
 		SendInput(2, input, sizeof(INPUT));
+		Sleep(8);
 	}
+}
+
+static BOOL cooking_focus_game(void) {
+	if (!game_ || !IsWindow(game_)) return FALSE;
+	DWORD game_thread = GetWindowThreadProcessId(game_, NULL);
+	DWORD current_thread = GetCurrentThreadId();
+	BOOL attached = game_thread != current_thread && AttachThreadInput(current_thread, game_thread, TRUE);
+	SetForegroundWindow(game_);
+	BringWindowToTop(game_);
+	SetFocus(game_);
+	if (attached) AttachThreadInput(current_thread, game_thread, FALSE);
+	return GetForegroundWindow() == game_;
 }
 
 static DWORD WINAPI cooking_request_thread(void* parameter) {
 	const int recipe_id = (int)(INT_PTR)parameter;
 	char command[40];
 	wsprintfA(command, "@hrocook %d", recipe_id);
-	if (!game_ || !SetForegroundWindow(game_)) {
+	char log_message[96];
+	wsprintfA(log_message, "Recipe Book request: %s", command);
+	log_line(log_message);
+	if (!cooking_focus_game()) {
+		log_line("Recipe Book request failed: game window did not receive focus.");
+		cooking_result_ = 0;
+		cooking_result_received_ = 1;
 		cooking_request_pending_ = 0;
+		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 		return 0;
 	}
-	Sleep(60);
+	Sleep(120);
+	cooking_send_virtual_key(VK_ESCAPE);
+	Sleep(80);
 	cooking_send_virtual_key(VK_RETURN);
-	Sleep(60);
+	Sleep(120);
 	cooking_send_unicode_text(command);
-	Sleep(30);
+	Sleep(80);
 	cooking_send_virtual_key(VK_RETURN);
+
+	// A missing server response must never leave the interface permanently
+	// blocked. A successful response clears this flag through HROCOOK|S.
+	Sleep(5000);
+	if (cooking_request_pending_) {
+		log_line("Recipe Book request timed out without a server result.");
+		cooking_result_ = 0;
+		cooking_result_received_ = 1;
+		cooking_request_pending_ = 0;
+		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+	}
 	return 0;
 }
 
