@@ -120,7 +120,13 @@ static int cooking_selected_, cooking_category_ = -1, cooking_page_;
 static int cooking_category_dropdown_, cooking_category_scroll_;
 static int cooking_item_details_open_;
 static int cooking_mode_, cooking_result_, cooking_result_received_, cooking_request_pending_;
+static volatile LONG cooking_request_serial_;
 static int cooking_requested_category_ = -1;
+
+typedef struct CookingRequest {
+	int recipe_id;
+	LONG serial;
+} CookingRequest;
 static int cooking_first_paint_ = 1, cooking_image_load_budget_;
 static HBITMAP cooking_title_icon_;
 static int cooking_title_icon_attempted_;
@@ -2567,18 +2573,23 @@ static BOOL cooking_focus_game(void) {
 }
 
 static DWORD WINAPI cooking_request_thread(void* parameter) {
-	const int recipe_id = (int)(INT_PTR)parameter;
+	CookingRequest* request = (CookingRequest*)parameter;
+	const int recipe_id = request->recipe_id;
+	const LONG request_serial = request->serial;
+	HeapFree(GetProcessHeap(), 0, request);
 	char command[40];
 	wsprintfA(command, "@hrocook %d", recipe_id);
 	char log_message[96];
-	wsprintfA(log_message, "Recipe Book request: %s", command);
+	wsprintfA(log_message, "Recipe Book request %ld: %s", request_serial, command);
 	log_line(log_message);
 	if (!cooking_focus_game()) {
 		log_line("Recipe Book request failed: game window did not receive focus.");
-		cooking_result_ = 0;
-		cooking_result_received_ = 1;
-		cooking_request_pending_ = 0;
-		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0)) {
+			cooking_result_ = 0;
+			cooking_result_received_ = 1;
+			cooking_request_pending_ = 0;
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
 		return 0;
 	}
 	// The Recipe Book click leaves keyboard focus outside the RO chat input.
@@ -2590,10 +2601,11 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 	Sleep(80);
 	cooking_send_virtual_key(VK_RETURN);
 
-	// A missing server response must never leave the interface permanently
-	// blocked. A successful response clears this flag through HROCOOK|S.
+	// Only this exact request may time itself out. An older worker must never
+	// cancel a later repeated cooking attempt that is already in progress.
 	Sleep(5000);
-	if (cooking_request_pending_) {
+	if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0) &&
+		cooking_request_pending_) {
 		log_line("Recipe Book request timed out without a server result.");
 		cooking_result_ = 0;
 		cooking_result_received_ = 1;
@@ -2605,13 +2617,20 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 
 static void cooking_request_recipe(int recipe_id) {
 	if (recipe_id < 1 || cooking_request_pending_) return;
+	CookingRequest* request = (CookingRequest*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(CookingRequest));
+	if (!request) return;
+	request->recipe_id = recipe_id;
+	request->serial = InterlockedIncrement(&cooking_request_serial_);
 	cooking_request_pending_ = 1;
 	cooking_result_ = 0;
 	cooking_result_received_ = 0;
 	cooking_requested_category_ = cooking_category_;
-	HANDLE thread = CreateThread(NULL, 0, cooking_request_thread, (void*)(INT_PTR)recipe_id, 0, NULL);
+	HANDLE thread = CreateThread(NULL, 0, cooking_request_thread, request, 0, NULL);
 	if (thread) CloseHandle(thread);
-	else cooking_request_pending_ = 0;
+	else {
+		HeapFree(GetProcessHeap(), 0, request);
+		cooking_request_pending_ = 0;
+	}
 }
 
 static void draw_client_item_description(HDC dc, const char* text, RECT* area) {
