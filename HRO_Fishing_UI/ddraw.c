@@ -123,7 +123,6 @@ static int cooking_category_dropdown_, cooking_category_scroll_;
 static int cooking_item_details_open_;
 static int cooking_mode_, cooking_result_, cooking_result_received_, cooking_request_pending_;
 static unsigned long cooking_session_token_;
-static int cooking_experiments_left_;
 static volatile LONG cooking_request_serial_;
 static volatile LONG cooking_progress_start_;
 static volatile LONG cooking_chat_input_ready_;
@@ -316,13 +315,12 @@ static void release_cooking_catalog(void) {
 
 static void parse_cooking_payload(const char* payload) {
 	if (payload[0] == 'B' && payload[1] == '|') {
-		int categories = 0, recipes = 0, mode = 0, experiments_left = 0;
+		int categories = 0, recipes = 0, mode = 0;
 		unsigned long session_token = 0;
-		if (sscanf(payload + 2, "%d|%d|%d|%lu|%d", &categories, &recipes, &mode,
-			&session_token, &experiments_left) >= 2) {
+		if (sscanf(payload + 2, "%d|%d|%d|%lu", &categories, &recipes, &mode,
+			&session_token) >= 2) {
 			cooking_mode_ = mode;
 			cooking_session_token_ = session_token;
-			cooking_experiments_left_ = experiments_left;
 			if (!cooking_request_pending_) { cooking_result_ = 0; cooking_result_received_ = 0; }
 			release_cooking_catalog();
 			cooking_recipe_count_ = 0;
@@ -388,9 +386,6 @@ static void parse_cooking_payload(const char* payload) {
 			}
 			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 		}
-	} else if (payload[0] == 'L' && payload[1] == '|') {
-		sscanf(payload + 2, "%d", &cooking_experiments_left_);
-		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 	} else if (payload[0] == 'S' && payload[1] == '|') {
 		int result = 0, recipe_id = 0;
 		if (sscanf(payload + 2, "%d|%d", &result, &recipe_id) == 2) {
@@ -3002,7 +2997,6 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 			else if (cooking_result_received_ && cooking_result_ == 4) { footer = "You no longer have the required items."; footer_color = RGB(165, 55, 45); }
 			else if (cooking_result_received_ && cooking_result_ == 5) { footer = "New recipe discovered!"; footer_color = RGB(35, 125, 72); }
 			else if (cooking_result_received_ && cooking_result_ == 6) { footer = "The combination produced no dish."; footer_color = RGB(165, 55, 45); }
-			else if (cooking_result_received_ && cooking_result_ == 7) { footer = "No experiment attempts remain today."; footer_color = RGB(165, 90, 35); }
 			else if (cooking_result_received_ && cooking_result_ == 8) { footer = "This recipe cannot be discovered by experimenting."; footer_color = RGB(165, 55, 45); }
 			SetTextColor(dc, footer_color);
 			DrawTextA(dc, footer, -1, &failure, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -3297,7 +3291,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V27.1 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V27.2 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
