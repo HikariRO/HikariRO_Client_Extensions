@@ -11,12 +11,14 @@
 typedef HRESULT (WINAPI *CreateFn)(GUID*, void**, REFIID, void*);
 typedef HRESULT (WINAPI *EnumFn)(void*, void*, DWORD);
 typedef int (WSAAPI *RecvFn)(SOCKET, char*, int, int);
+typedef int (WSAAPI *SendFn)(SOCKET, const char*, int, int);
 typedef int (WSAAPI *WSARecvFn)(SOCKET, LPWSABUF, DWORD, LPDWORD, LPDWORD,
 	LPWSAOVERLAPPED, LPWSAOVERLAPPED_COMPLETION_ROUTINE);
 static HMODULE real_ddraw;
 static CreateFn real_create;
 static EnumFn real_enum;
 static RecvFn real_recv;
+static SendFn real_send;
 static WSARecvFn real_wsarecv;
 static volatile LONG state_, tension_, distance_, resistance_, action_;
 static volatile LONG fishing_level_, fishing_exp_, fishing_next_exp_;
@@ -25,6 +27,7 @@ static float shown_tension_, shown_distance_;
 static HWND game_, hud_;
 static HWND album_;
 static HWND card_album_;
+static HWND cooking_book_;
 static HBITMAP card_album_background_;
 static int card_album_background_attempted_;
 static HBITMAP album_background_;
@@ -80,9 +83,70 @@ static int storage_tail_len_;
 static BYTE* card_name_table_;
 static DWORD card_name_table_size_;
 static int card_name_table_attempted_;
+static BYTE* item_info_table_;
+static DWORD item_info_table_size_;
+static int item_info_table_attempted_;
+static BYTE* english_item_info_table_;
+static DWORD english_item_info_table_size_;
+static int english_item_info_table_attempted_;
+static BYTE* item_description_table_;
+static DWORD item_description_table_size_;
+static int item_description_table_attempted_;
 static int card_chat_bytes_to_discard_;
 
+typedef struct CookingIngredient {
+	int item_id, required, owned;
+	char name[64], resource_name[64];
+	HBITMAP image;
+	int image_attempted;
+} CookingIngredient;
+
+typedef struct CookingRecipe {
+	int id, category, product_id, amount, success_rate, consume_failure, unlocked, recipe_item, experiment;
+	char name[64], resource_name[64];
+	CookingIngredient ingredients[12];
+	int ingredient_count;
+	HBITMAP image;
+	int image_attempted;
+	HBITMAP collection_image;
+	int collection_attempted;
+	char description[768];
+	int description_attempted;
+} CookingRecipe;
+
+static CookingRecipe cooking_recipes_[256];
+static char cooking_categories_[64][32];
+static volatile LONG cooking_book_open_;
+static int cooking_recipe_count_, cooking_expected_, cooking_category_count_;
+static int cooking_selected_, cooking_category_ = -1, cooking_page_;
+static int cooking_category_dropdown_, cooking_category_scroll_;
+static int cooking_item_details_open_;
+static int cooking_mode_, cooking_result_, cooking_result_received_, cooking_request_pending_;
+static unsigned long cooking_session_token_;
+static volatile LONG cooking_request_serial_;
+static volatile LONG cooking_progress_start_;
+static volatile LONG cooking_chat_input_ready_;
+static const DWORD COOKING_PROGRESS_DURATION_MS = 2500;
+static SOCKET cooking_command_socket_ = INVALID_SOCKET;
+static BYTE cooking_command_packet_[512];
+static volatile LONG cooking_command_packet_length_;
+static char cooking_command_text_[40];
+static int cooking_command_send_flags_;
+static int cooking_requested_category_ = -1;
+
+typedef struct CookingRequest {
+	int recipe_id;
+	LONG serial;
+} CookingRequest;
+static int cooking_first_paint_ = 1, cooking_image_load_budget_;
+static HBITMAP cooking_title_icon_;
+static int cooking_title_icon_attempted_;
+static BYTE cooking_tail_[512];
+static int cooking_tail_len_;
+
 static HBITMAP load_fishing_background(const char* filename);
+static BOOL cooking_recipe_visible(int index);
+static void reset_cooking_page(void);
 
 static void byte_copy(void* output, const void* input, int length) {
 	BYTE* out = (BYTE*)output;
@@ -219,6 +283,139 @@ static void parse_card_payload(const char* payload) {
 	}
 }
 
+static int split_fields(char* record, char** fields, int maximum) {
+	int count = 1;
+	fields[0] = record;
+	while (count < maximum) {
+		char* delimiter = strchr(fields[count - 1], '|');
+		if (!delimiter) break;
+		*delimiter = '\0';
+		fields[count++] = delimiter + 1;
+	}
+	return count;
+}
+
+static CookingRecipe* cooking_recipe_by_id(int id) {
+	for (int i = 0; i < cooking_recipe_count_; ++i)
+		if (cooking_recipes_[i].id == id) return &cooking_recipes_[i];
+	return NULL;
+}
+
+static void release_cooking_catalog(void) {
+	for (int recipe_index = 0; recipe_index < cooking_recipe_count_; ++recipe_index) {
+		CookingRecipe* recipe = &cooking_recipes_[recipe_index];
+		if (recipe->image) DeleteObject(recipe->image);
+		if (recipe->collection_image) DeleteObject(recipe->collection_image);
+		for (int ingredient_index = 0; ingredient_index < 12; ++ingredient_index)
+			if (recipe->ingredients[ingredient_index].image)
+				DeleteObject(recipe->ingredients[ingredient_index].image);
+	}
+	ZeroMemory(cooking_recipes_, sizeof(cooking_recipes_));
+}
+
+static void parse_cooking_payload(const char* payload) {
+	if (payload[0] == 'B' && payload[1] == '|') {
+		int categories = 0, recipes = 0, mode = 0;
+		unsigned long session_token = 0;
+		if (sscanf(payload + 2, "%d|%d|%d|%lu", &categories, &recipes, &mode,
+			&session_token) >= 2) {
+			cooking_mode_ = mode;
+			cooking_session_token_ = session_token;
+			if (!cooking_request_pending_) { cooking_result_ = 0; cooking_result_received_ = 0; }
+			release_cooking_catalog();
+			cooking_recipe_count_ = 0;
+			cooking_category_count_ = categories > 64 ? 64 : categories;
+			cooking_expected_ = recipes;
+			cooking_selected_ = cooking_page_ = 0;
+			cooking_category_ = -1;
+			cooking_category_dropdown_ = cooking_category_scroll_ = 0;
+			cooking_first_paint_ = 1;
+			ZeroMemory(cooking_categories_, sizeof(cooking_categories_));
+			InterlockedExchange(&cooking_book_open_, 1);
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
+	} else if (payload[0] == 'C' && payload[1] == '|') {
+		int index = -1; char name[32] = {0};
+		if (sscanf(payload + 2, "%d|%31[^|]", &index, name) == 2 && index >= 0 && index < 64)
+			lstrcpynA(cooking_categories_[index], name, sizeof(cooking_categories_[index]));
+	} else if (payload[0] == 'R' && payload[1] == '|' && cooking_recipe_count_ < 256) {
+		char record[512]; char* field[12];
+		lstrcpynA(record, payload + 2, sizeof(record));
+		if (split_fields(record, field, 12) == 12) {
+			CookingRecipe entry = {0};
+			if (sscanf(field[0], "%d", &entry.id) == 1 && sscanf(field[1], "%d", &entry.category) == 1 &&
+				sscanf(field[2], "%d", &entry.product_id) == 1 && sscanf(field[3], "%d", &entry.amount) == 1 &&
+				sscanf(field[4], "%d", &entry.success_rate) == 1 && sscanf(field[5], "%d", &entry.consume_failure) == 1 &&
+				sscanf(field[6], "%d", &entry.unlocked) == 1 && sscanf(field[7], "%d", &entry.recipe_item) == 1 &&
+				sscanf(field[8], "%d", &entry.ingredient_count) == 1) {
+				lstrcpynA(entry.name, field[9], sizeof(entry.name));
+				lstrcpynA(entry.resource_name, field[10], sizeof(entry.resource_name));
+				sscanf(field[11], "%d", &entry.experiment);
+				if (entry.ingredient_count > 12) entry.ingredient_count = 12;
+				cooking_recipes_[cooking_recipe_count_++] = entry;
+			}
+		}
+	} else if (payload[0] == 'I' && payload[1] == '|') {
+		char record[384]; char* field[6];
+		lstrcpynA(record, payload + 2, sizeof(record));
+		if (split_fields(record, field, 6) == 6) {
+			int recipe_id = 0; CookingIngredient ingredient = {0};
+			if (sscanf(field[0], "%d", &recipe_id) == 1 && sscanf(field[1], "%d", &ingredient.item_id) == 1 &&
+				sscanf(field[2], "%d", &ingredient.required) == 1 && sscanf(field[3], "%d", &ingredient.owned) == 1) {
+				lstrcpynA(ingredient.name, field[4], sizeof(ingredient.name));
+				lstrcpynA(ingredient.resource_name, field[5], sizeof(ingredient.resource_name));
+				CookingRecipe* recipe = cooking_recipe_by_id(recipe_id);
+				if (recipe) {
+					int slot = 0;
+					while (slot < 12 && recipe->ingredients[slot].item_id) ++slot;
+					if (slot < 12) recipe->ingredients[slot] = ingredient;
+				}
+			}
+		}
+	} else if (payload[0] == 'U' && payload[1] == '|') {
+		int recipe_id = 0, item_id = 0, owned = 0;
+		if (sscanf(payload + 2, "%d|%d|%d", &recipe_id, &item_id, &owned) == 3) {
+			CookingRecipe* recipe = cooking_recipe_by_id(recipe_id);
+			if (recipe) {
+				for (int index = 0; index < recipe->ingredient_count; ++index) {
+					if (recipe->ingredients[index].item_id == item_id) {
+						recipe->ingredients[index].owned = owned;
+						break;
+					}
+				}
+			}
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
+	} else if (payload[0] == 'S' && payload[1] == '|') {
+		int result = 0, recipe_id = 0;
+		if (sscanf(payload + 2, "%d|%d", &result, &recipe_id) == 2) {
+			cooking_result_ = result;
+			cooking_result_received_ = 1;
+			CookingRecipe* result_recipe = cooking_recipe_by_id(recipe_id);
+			if (result == 5 && result_recipe) result_recipe->unlocked = 1;
+			cooking_request_pending_ = 0;
+			InterlockedExchange(&cooking_progress_start_, 0);
+			cooking_category_ = result == 5 && result_recipe ?
+				result_recipe->category : cooking_requested_category_;
+			cooking_requested_category_ = -1;
+			int visible_position = 0;
+			for (int index = 0; index < cooking_recipe_count_; ++index) {
+				if (cooking_recipes_[index].id == recipe_id) {
+					cooking_selected_ = index;
+					cooking_page_ = visible_position / 6;
+					break;
+				}
+				if (cooking_recipe_visible(index)) ++visible_position;
+			}
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
+	} else if (payload[0] == 'O') {
+		reset_cooking_page();
+		InterlockedExchange(&cooking_book_open_, 1);
+		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+	}
+}
+
 static void suppress_stream_marker(char* data, int length, const char* marker, int marker_length) {
 	for (int i = 0; i + marker_length <= length; ++i)
 		if (bytes_equal((BYTE*)data + i, marker, marker_length)) data[i] = 0;
@@ -288,6 +485,38 @@ static void parse_card_stream(char* data, int length) {
 	} else {
 		card_tail_len_ = total > marker_length - 1 ? marker_length - 1 : total;
 		byte_copy(card_tail_, merged + total - card_tail_len_, card_tail_len_);
+	}
+	suppress_stream_marker(data, length, marker, marker_length);
+	if (crosses && length > 0) data[0] = 0;
+}
+
+static void parse_cooking_stream(char* data, int length) {
+	static const char marker[] = "HROCOOK|";
+	const int marker_length = 8;
+	BOOL crosses = marker_crosses_boundary(cooking_tail_, cooking_tail_len_, data, length, marker, marker_length);
+	BYTE merged[8704];
+	int copy = length > 8192 ? 8192 : length;
+	byte_copy(merged, cooking_tail_, cooking_tail_len_);
+	byte_copy(merged + cooking_tail_len_, data + length - copy, copy);
+	int total = cooking_tail_len_ + copy, unfinished = -1;
+	for (int i = 0; i + marker_length <= total; ++i) {
+		if (!bytes_equal(merged + i, marker, marker_length)) continue;
+		int end = i + marker_length;
+		while (end < total && merged[end] != ';' && end - i < 511) ++end;
+		if (end >= total || merged[end] != ';') { unfinished = i; break; }
+		char payload[512]; int payload_length = end - (i + marker_length);
+		byte_copy(payload, merged + i + marker_length, payload_length);
+		payload[payload_length] = '\0';
+		parse_cooking_payload(payload);
+		i = end;
+	}
+	if (unfinished >= 0) {
+		cooking_tail_len_ = total - unfinished;
+		if (cooking_tail_len_ > 511) cooking_tail_len_ = 511;
+		byte_copy(cooking_tail_, merged + total - cooking_tail_len_, cooking_tail_len_);
+	} else {
+		cooking_tail_len_ = total > marker_length - 1 ? marker_length - 1 : total;
+		byte_copy(cooking_tail_, merged + total - cooking_tail_len_, cooking_tail_len_);
 	}
 	suppress_stream_marker(data, length, marker, marker_length);
 	if (crosses && length > 0) data[0] = 0;
@@ -368,18 +597,9 @@ static void parse_album_stream(char* data, int length) {
 }
 
 static void log_line(const char* line) {
-	char path[MAX_PATH];
-	GetModuleFileNameA(NULL, path, MAX_PATH);
-	char* slash = NULL;
-	for (char* p = path; *p; ++p) if (*p == '\\') slash = p;
-	if (slash) lstrcpyA(slash + 1, "hro_fishing_ui.log");
-	HANDLE file = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-		NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (file == INVALID_HANDLE_VALUE) return;
-	DWORD written;
-	WriteFile(file, line, (DWORD)lstrlenA(line), &written, NULL);
-	WriteFile(file, "\r\n", 2, &written, NULL);
-	CloseHandle(file);
+	/* Release builds intentionally keep diagnostics disabled. The client must
+	 * not create or grow hro_fishing_ui.log during normal gameplay. */
+	(void)line;
 }
 
 static void apply_fishing_state(int state, int tension, int distance, int resistance,
@@ -401,6 +621,7 @@ static void apply_fishing_state(int state, int tension, int distance, int resist
 static void parse_marker(char* data, int length) {
 	parse_album_stream(data, length);
 	parse_card_stream(data, length);
+	parse_cooking_stream(data, length);
 	suppress_storage_stream(data, length);
 	for (int i = 0; i + 8 < length; ++i) {
 		if (!bytes_equal((BYTE*)data + i, "HROFISH|", 8)) continue;
@@ -475,6 +696,8 @@ static int strip_card_chat_packets(char* data, int length) {
 		if (marker_offset >= 0 && packet_length >= marker_offset + 8 &&
 			offset + marker_offset < length) {
 			static const char card_marker[] = "HROCARD|";
+			static const char album_marker[] = "HROALBUM|";
+			static const char cooking_marker[] = "HROCOOK|";
 			static const char storage_marker[] = "HROSTORAGE|";
 			int available = length - offset - marker_offset;
 			int compared = available < 8 ? available : 8;
@@ -484,6 +707,20 @@ static int strip_card_chat_packets(char* data, int length) {
 				/* parse_marker() has already replaced the first H with NUL. */
 				if (i == 0 && value == 0) continue;
 				if (value != (unsigned char)card_marker[i]) { is_card_packet = FALSE; break; }
+			}
+			int album_compared = available < 9 ? available : 9;
+			BOOL is_album_packet = TRUE;
+			for (int i = 0; i < album_compared; ++i) {
+				unsigned char value = packet[marker_offset + i];
+				if (i == 0 && value == 0) continue;
+				if (value != (unsigned char)album_marker[i]) { is_album_packet = FALSE; break; }
+			}
+			int cooking_compared = available < 8 ? available : 8;
+			BOOL is_cooking_packet = TRUE;
+			for (int i = 0; i < cooking_compared; ++i) {
+				unsigned char value = packet[marker_offset + i];
+				if (i == 0 && value == 0) continue;
+				if (value != (unsigned char)cooking_marker[i]) { is_cooking_packet = FALSE; break; }
 			}
 			int storage_compared = available < 11 ? available : 11;
 			BOOL is_storage_packet = TRUE;
@@ -496,9 +733,11 @@ static int strip_card_chat_packets(char* data, int length) {
 			 * receive may end after H, HR or HRO; hide that incomplete prefix
 			 * while the stream tails retain it for reconstruction. */
 			if (available > 0 && available < 4 &&
-				is_card_packet && is_storage_packet)
+				is_card_packet && is_album_packet && is_cooking_packet && is_storage_packet)
 				packet[marker_offset] = 0;
 			if ((is_card_packet && compared >= 8) ||
+				(is_album_packet && album_compared >= 9) ||
+				(is_cooking_packet && cooking_compared >= 8) ||
 				(is_storage_packet && storage_compared >= 11)) {
 				int present = length - offset;
 				if (present >= packet_length) {
@@ -535,20 +774,101 @@ static int WSAAPI hooked_recv(SOCKET s, char* buffer, int length, int flags) {
 	}
 }
 
+static int WSAAPI hooked_send(SOCKET socket, const char* buffer, int length, int flags) {
+	// Keep the exact client-generated packet for a successful Recipe Book
+	// command. Replaying this packet avoids reopening RO's chat for repeats.
+	static const char prefix[] = "@hrocook ";
+	for (int command_offset = 0; command_offset + (int)sizeof(prefix) - 1 < length; ++command_offset) {
+		if (memcmp(buffer + command_offset, prefix, sizeof(prefix) - 1) != 0) continue;
+		int packet_start = -1, packet_length = 0;
+		for (int candidate = command_offset; candidate >= 0; --candidate) {
+			if (candidate + 4 > length) continue;
+			int declared = (unsigned char)buffer[candidate + 2] |
+				((unsigned char)buffer[candidate + 3] << 8);
+			if (declared >= 4 && declared <= (int)sizeof(cooking_command_packet_) &&
+				candidate + declared <= length && command_offset < candidate + declared) {
+				packet_start = candidate;
+				packet_length = declared;
+			}
+		}
+		if (packet_start < 0 && length <= (int)sizeof(cooking_command_packet_)) {
+			packet_start = 0;
+			packet_length = length;
+		}
+		if (packet_start >= 0) {
+			InterlockedExchange(&cooking_command_packet_length_, 0);
+			CopyMemory(cooking_command_packet_, buffer + packet_start, packet_length);
+			int command_length = packet_start + packet_length - command_offset;
+			if (command_length >= (int)sizeof(cooking_command_text_)) command_length = sizeof(cooking_command_text_) - 1;
+			CopyMemory(cooking_command_text_, buffer + command_offset, command_length);
+			cooking_command_text_[command_length] = '\0';
+			// Modern packets may not terminate chat text; trim any non-command tail.
+			for (int i = (int)sizeof(prefix) - 1; cooking_command_text_[i]; ++i)
+				if (cooking_command_text_[i] < '0' || cooking_command_text_[i] > '9') {
+					cooking_command_text_[i] = '\0';
+					break;
+				}
+			cooking_command_socket_ = socket;
+			cooking_command_send_flags_ = flags;
+			InterlockedExchange(&cooking_command_packet_length_, packet_length);
+			log_line("Recipe Book command packet captured for reliable repeats.");
+		}
+		break;
+	}
+	return real_send(socket, buffer, length, flags);
+}
+
+static BOOL cooking_replay_command(const char* command) {
+	LONG length = InterlockedCompareExchange(&cooking_command_packet_length_, 0, 0);
+	if (!real_send || cooking_command_socket_ == INVALID_SOCKET || length <= 0 ||
+		lstrcmpA(command, cooking_command_text_) != 0)
+		return FALSE;
+	int sent = real_send(cooking_command_socket_, (const char*)cooking_command_packet_,
+		(int)length, cooking_command_send_flags_);
+	if (sent == length) {
+		log_line("Recipe Book command packet replayed without using chat.");
+		return TRUE;
+	}
+	log_line("Recipe Book command replay failed; falling back to chat input.");
+	return FALSE;
+}
+
 static int WSAAPI hooked_wsarecv(SOCKET socket, LPWSABUF buffers, DWORD count,
 	LPDWORD received, LPDWORD flags, LPWSAOVERLAPPED overlapped,
 	LPWSAOVERLAPPED_COMPLETION_ROUTINE completion) {
 	InterlockedIncrement(&wsarecv_calls_);
-	int result = real_wsarecv(socket, buffers, count, received, flags, overlapped, completion);
-	if (result == 0 && received && *received > 0 && !overlapped) {
-		DWORD remaining = *received;
-		for (DWORD i = 0; i < count && remaining; ++i) {
-			int length = (int)(buffers[i].len < remaining ? buffers[i].len : remaining);
-			if (length > 0) parse_marker(buffers[i].buf, length);
-			remaining -= (DWORD)length;
+	for (;;) {
+		int result = real_wsarecv(socket, buffers, count, received, flags, overlapped, completion);
+		if (result != 0 || !received || *received == 0 || overlapped)
+			return result;
+
+		const DWORD original_length = *received;
+		char* contiguous = (char*)HeapAlloc(GetProcessHeap(), 0, original_length);
+		if (!contiguous)
+			return result; // Never alter normal network data when allocation fails.
+
+		DWORD copied = 0;
+		for (DWORD i = 0; i < count && copied < original_length; ++i) {
+			DWORD chunk = buffers[i].len < original_length - copied ? buffers[i].len : original_length - copied;
+			if (chunk > 0) CopyMemory(contiguous + copied, buffers[i].buf, chunk);
+			copied += chunk;
 		}
+		parse_marker(contiguous, (int)copied);
+		DWORD kept = (DWORD)strip_card_chat_packets(contiguous, (int)copied);
+		DWORD source = 0;
+		for (DWORD i = 0; i < count && source < kept; ++i) {
+			DWORD chunk = buffers[i].len < kept - source ? buffers[i].len : kept - source;
+			if (chunk > 0) CopyMemory(buffers[i].buf, contiguous + source, chunk);
+			source += chunk;
+		}
+		*received = kept;
+		HeapFree(GetProcessHeap(), 0, contiguous);
+
+		if (kept > 0)
+			return result;
+		// A block containing only internal HRO markers is not a socket close.
+		// Keep receiving until normal game data is available, mirroring hooked_recv.
 	}
-	return result;
 }
 
 static int replace_imports(HMODULE module, void* original, void* replacement) {
@@ -582,20 +902,22 @@ static void hook_recv(void) {
 	HMODULE ws = GetModuleHandleA("ws2_32.dll");
 	if (!ws) return;
 	real_recv = (RecvFn)GetProcAddress(ws, "recv");
+	real_send = (SendFn)GetProcAddress(ws, "send");
 	real_wsarecv = (WSARecvFn)GetProcAddress(ws, "WSARecv");
-	int recv_count = 0, wsarecv_count = 0;
+	int recv_count = 0, send_count = 0, wsarecv_count = 0;
 	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
 	if (snapshot != INVALID_HANDLE_VALUE) {
 		MODULEENTRY32 entry = {0};
 		entry.dwSize = sizeof(entry);
 		if (Module32First(snapshot, &entry)) do {
 			recv_count += replace_imports(entry.hModule, (void*)real_recv, (void*)hooked_recv);
+			send_count += replace_imports(entry.hModule, (void*)real_send, (void*)hooked_send);
 			wsarecv_count += replace_imports(entry.hModule, (void*)real_wsarecv, (void*)hooked_wsarecv);
 		} while (Module32Next(snapshot, &entry));
 		CloseHandle(snapshot);
 	}
 	char message[96];
-	wsprintfA(message, "Network hooks installed: recv=%d, WSARecv=%d.", recv_count, wsarecv_count);
+	wsprintfA(message, "Network hooks installed: recv=%d, send=%d, WSARecv=%d.", recv_count, send_count, wsarecv_count);
 	log_line(message);
 }
 
@@ -1260,6 +1582,297 @@ static HBITMAP load_collection_image(const char* resource_name) {
 		if (image) return image;
 	}
 	return NULL;
+}
+
+static BOOL find_item_resource(int id, char* output, int output_length) {
+	if (!item_info_table_attempted_) {
+		item_info_table_attempted_ = 1;
+		static const char* candidates[] = {
+			"SystemEN\\LuaFiles514\\itemInfo.lua",
+			"SystemEN\\LuaFiles514\\itemInfo.lub",
+			"SystemEN\\LuaFiles514\\Lua Files\\Datainfo\\itemInfo.lua",
+			"SystemEN\\LuaFiles514\\Lua Files\\Datainfo\\itemInfo.lub",
+			"SystemEN\\LuaFiles514\\Lua Files\\itemInfo.lua",
+			"SystemEN\\LuaFiles514\\Lua Files\\itemInfo.lub",
+			"SystemEN\\itemInfo.lua",
+			"SystemEN\\itemInfo.lub",
+			"data\\luafiles514\\lua files\\datainfo\\iteminfo.lua",
+			"data\\luafiles514\\lua files\\datainfo\\iteminfo.lub",
+			"data\\luafiles514\\lua files\\iteminfo.lua",
+			"data\\luafiles514\\lua files\\iteminfo.lub",
+			"data\\lua files\\datainfo\\iteminfo.lua",
+			"data\\lua files\\datainfo\\iteminfo.lub"
+		};
+		for (int i = 0; i < 14 && !item_info_table_; ++i) {
+			BYTE* candidate = NULL; DWORD candidate_size = 0;
+			if (!load_client_file(candidates[i], &candidate, &candidate_size)) continue;
+			/* A compiled .lub may exist before a readable Lua source in another
+			 * client folder. Keep searching unless this candidate really contains
+			 * the itemInfo field names needed by the recipe book. */
+			if (strstr((const char*)candidate, "identifiedDescriptionName") ||
+				strstr((const char*)candidate, "identifiedResourceName")) {
+				item_info_table_ = candidate; item_info_table_size_ = candidate_size;
+			} else HeapFree(GetProcessHeap(), 0, candidate);
+		}
+		log_line(item_info_table_ ? "itemInfo table loaded for cooking icons." :
+			"itemInfo table was not found; cooking icons will use Aegis names.");
+	}
+	if (!item_info_table_ || output_length < 2) return FALSE;
+	const char* data = (const char*)item_info_table_;
+	DWORD position = 0;
+	while (position < item_info_table_size_) {
+		if (data[position] != '[') { ++position; continue; }
+		DWORD cursor = position + 1; int found_id = 0; BOOL has_digits = FALSE;
+		while (cursor < item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
+		char id_quote = 0;
+		if (cursor < item_info_table_size_ && (data[cursor] == '"' || data[cursor] == '\'')) id_quote = data[cursor++];
+		while (cursor < item_info_table_size_ && data[cursor] >= '0' && data[cursor] <= '9') {
+			has_digits = TRUE; found_id = found_id * 10 + data[cursor] - '0'; ++cursor;
+		}
+		if (id_quote && cursor < item_info_table_size_ && data[cursor] == id_quote) ++cursor;
+		while (cursor < item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
+		if (!has_digits || cursor >= item_info_table_size_ || data[cursor] != ']') { ++position; continue; }
+		if (found_id != id) { position = cursor + 1; continue; }
+		DWORD block_end = cursor + 1;
+		while (block_end < item_info_table_size_ && block_end < cursor + 8192) {
+			if (data[block_end] == '[' && (block_end == 0 || data[block_end - 1] == '\n')) break;
+			++block_end;
+		}
+		static const char field[] = "identifiedResourceName";
+		for (DWORD field_pos = cursor + 1; field_pos + sizeof(field) - 1 < block_end; ++field_pos) {
+			if (memcmp(data + field_pos, field, sizeof(field) - 1) != 0) continue;
+			if (field_pos > cursor + 1) {
+				char previous = data[field_pos - 1];
+				if ((previous >= 'A' && previous <= 'Z') || (previous >= 'a' && previous <= 'z') || previous == '_') continue;
+			}
+			DWORD value = field_pos + sizeof(field) - 1;
+			while (value < block_end && data[value] != '"' && data[value] != '\'') ++value;
+			if (value >= block_end) return FALSE;
+			char quote = data[value++]; DWORD end = value;
+			while (end < block_end && data[end] != quote) ++end;
+			if (end <= value || end >= block_end) return FALSE;
+			int length = (int)(end - value); if (length >= output_length) length = output_length - 1;
+			byte_copy(output, data + value, length); output[length] = 0; return TRUE;
+		}
+		return FALSE;
+	}
+	return FALSE;
+}
+
+static BOOL find_item_description_lua(int id, char* output, int output_length) {
+	if (!english_item_info_table_attempted_) {
+		english_item_info_table_attempted_ = 1;
+		/* Recipe descriptions must come from the client's English System folder.
+		 * The generic data GRFs commonly contain the original Korean table. */
+		if (load_client_file("SystemEN\\LuaFiles514\\itemInfo.lua",
+			&english_item_info_table_, &english_item_info_table_size_))
+			log_line("English SystemEN itemInfo loaded for recipe descriptions.");
+		else
+			log_line("English SystemEN itemInfo was not found for recipe descriptions.");
+	}
+	if (!english_item_info_table_ || output_length < 2) return FALSE;
+	const char* data = (const char*)english_item_info_table_;
+	DWORD position = 0;
+	while (position < english_item_info_table_size_) {
+		if (data[position] != '[') { ++position; continue; }
+		DWORD cursor = position + 1; int found_id = 0; BOOL has_digits = FALSE;
+		while (cursor < english_item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
+		char id_quote = 0;
+		if (cursor < english_item_info_table_size_ && (data[cursor] == '"' || data[cursor] == '\'')) id_quote = data[cursor++];
+		while (cursor < english_item_info_table_size_ && data[cursor] >= '0' && data[cursor] <= '9') {
+			has_digits = TRUE; found_id = found_id * 10 + data[cursor] - '0'; ++cursor;
+		}
+		if (id_quote && cursor < english_item_info_table_size_ && data[cursor] == id_quote) ++cursor;
+		while (cursor < english_item_info_table_size_ && (data[cursor] == ' ' || data[cursor] == '\t')) ++cursor;
+		if (!has_digits || cursor >= english_item_info_table_size_ || data[cursor] != ']') { ++position; continue; }
+		if (found_id != id) { position = cursor + 1; continue; }
+		DWORD block_end = cursor + 1;
+		while (block_end < english_item_info_table_size_ && block_end < cursor + 16384) {
+			if (data[block_end] == '[' && block_end > 0 && data[block_end - 1] == '\n') break;
+			++block_end;
+		}
+		static const char field[] = "identifiedDescriptionName";
+		DWORD field_position = cursor + 1;
+		while (field_position + sizeof(field) - 1 < block_end) {
+			if (memcmp(data + field_position, field, sizeof(field) - 1) == 0) {
+				char previous = field_position > cursor + 1 ? data[field_position - 1] : 0;
+				char following = data[field_position + sizeof(field) - 1];
+				BOOL previous_is_identifier = (previous >= 'A' && previous <= 'Z') ||
+					(previous >= 'a' && previous <= 'z') || previous == '_';
+				BOOL following_is_identifier = (following >= 'A' && following <= 'Z') ||
+					(following >= 'a' && following <= 'z') || following == '_';
+				if (!previous_is_identifier && !following_is_identifier) break;
+			}
+			++field_position;
+		}
+		if (field_position + sizeof(field) - 1 >= block_end) return FALSE;
+		DWORD description_end = field_position + sizeof(field) - 1;
+		while (description_end < block_end && data[description_end] != '}') ++description_end;
+		int written = 0;
+		for (DWORD p = field_position + sizeof(field) - 1; p < description_end && written + 1 < output_length; ++p) {
+			if (data[p] != '"' && data[p] != '\'') continue;
+			char quote = data[p++];
+			if (written > 0 && written + 1 < output_length) output[written++] = '\n';
+			while (p < description_end && data[p] != quote && written + 1 < output_length) {
+				if (data[p] == '^' && p + 6 < description_end) {
+					BOOL color = TRUE;
+					for (int digit = 1; digit <= 6; ++digit) {
+						char value = data[p + digit];
+						if (!((value >= '0' && value <= '9') || (value >= 'A' && value <= 'F') ||
+							(value >= 'a' && value <= 'f'))) { color = FALSE; break; }
+					}
+					if (color) { p += 7; continue; }
+				}
+				if (data[p] == '\\' && p + 1 < description_end) {
+					if (data[p + 1] == 'n') { output[written++] = '\n'; p += 2; continue; }
+					if (data[p + 1] == '"' || data[p + 1] == '\\') ++p;
+				}
+				output[written++] = data[p++];
+			}
+		}
+		while (written > 0 && (output[written - 1] == '\n' || output[written - 1] == ' ')) --written;
+		output[written] = 0;
+		return written > 0;
+	}
+	return FALSE;
+}
+
+static BOOL find_legacy_item_description(int id, char* output, int output_length) {
+	if (!item_description_table_attempted_) {
+		item_description_table_attempted_ = 1;
+		static const char* candidates[] = {
+			"SystemEN\\idnum2itemdesctable.txt",
+			"SystemEN\\LuaFiles514\\idnum2itemdesctable.txt"
+		};
+		for (int i = 0; i < 2 && !item_description_table_; ++i)
+			load_client_file(candidates[i], &item_description_table_, &item_description_table_size_);
+	}
+	if (!item_description_table_) return FALSE;
+	const char* data = (const char*)item_description_table_;
+	DWORD p = 0;
+	while (p < item_description_table_size_) {
+		while (p < item_description_table_size_ && (data[p] == '\r' || data[p] == '\n' || data[p] == ' ' || data[p] == '\t')) ++p;
+		int found_id = 0; BOOL digits = FALSE;
+		while (p < item_description_table_size_ && data[p] >= '0' && data[p] <= '9') {
+			digits = TRUE; found_id = found_id * 10 + data[p] - '0'; ++p;
+		}
+		if (!digits || p >= item_description_table_size_ || data[p] != '#') {
+			while (p < item_description_table_size_ && data[p] != '\n') ++p;
+			continue;
+		}
+		DWORD start = ++p, end = start;
+		while (end < item_description_table_size_ && data[end] != '#') ++end;
+		if (found_id == id && end > start) {
+			int written = 0;
+			for (DWORD source = start; source < end && written + 1 < output_length; ++source) {
+				if (data[source] == '^' && source + 6 < end) {
+					BOOL color = TRUE;
+					for (int digit = 1; digit <= 6; ++digit) {
+						char value = data[source + digit];
+						if (!((value >= '0' && value <= '9') || (value >= 'A' && value <= 'F') ||
+							(value >= 'a' && value <= 'f'))) { color = FALSE; break; }
+					}
+					if (color) { source += 6; continue; }
+				}
+				output[written++] = data[source] == '\t' ? ' ' : data[source];
+			}
+			output[written] = 0; return written > 0;
+		}
+		p = end < item_description_table_size_ ? end + 1 : end;
+	}
+	return FALSE;
+}
+
+static BOOL find_item_description(int id, char* output, int output_length) {
+	return find_item_description_lua(id, output, output_length) ||
+		find_legacy_item_description(id, output, output_length);
+}
+
+static HBITMAP load_item_image(int item_id, const char* fallback_resource) {
+	char resource_utf8[128] = {0}, resource[256] = {0};
+	if (!find_item_resource(item_id, resource_utf8, sizeof(resource_utf8)))
+		lstrcpynA(resource_utf8, fallback_resource ? fallback_resource : "", sizeof(resource_utf8));
+	if (!resource_utf8[0]) return NULL;
+	WCHAR wide_resource[128];
+	if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, resource_utf8, -1, wide_resource, 128) &&
+		WideCharToMultiByte(949, 0, wide_resource, -1, resource, sizeof(resource), NULL, NULL) == 0)
+		lstrcpynA(resource, resource_utf8, sizeof(resource));
+	if (!resource[0]) lstrcpynA(resource, resource_utf8, sizeof(resource));
+	char wanted[320], root[MAX_PATH], path[MAX_PATH], grf_name[128];
+	lstrcpyA(wanted, "data\\texture\\\xC0\xAF\xC0\xFA\xC0\xCE\xC5\xCD\xC6\xE4\xC0\xCC\xBD\xBA\\item\\");
+	lstrcatA(wanted, resource);
+	lstrcatA(wanted, ".bmp");
+	GetModuleFileNameA(NULL, root, MAX_PATH);
+	char* slash = strrchr(root, '\\');
+	if (slash) *(slash + 1) = 0;
+	lstrcpynA(path, root, MAX_PATH); lstrcatA(path, wanted);
+	HBITMAP loose = (HBITMAP)LoadImageA(NULL, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	if (loose) return loose;
+	lstrcpynA(path, root, MAX_PATH); lstrcatA(path, "DATA.ini");
+	for (int index = 0; index < 32; ++index) {
+		char key[16]; wsprintfA(key, "%d", index);
+		if (!GetPrivateProfileStringA("Data", key, "", grf_name, sizeof(grf_name), path)) break;
+		char archive[MAX_PATH]; lstrcpynA(archive, root, MAX_PATH); lstrcatA(archive, grf_name);
+		HBITMAP image = load_bitmap_from_grf(archive, wanted);
+		if (image) return image;
+	}
+	return NULL;
+}
+
+static void draw_item_image(HDC dc, RECT area, HBITMAP* image, int* attempted, int item_id, const char* resource_name) {
+	if (!*attempted && cooking_image_load_budget_ > 0) {
+		--cooking_image_load_budget_;
+		*attempted = 1;
+		*image = load_item_image(item_id, resource_name);
+	}
+	if (!*image) {
+		RECT placeholder = {area.left + 5, area.top + 5, area.right - 5, area.bottom - 5};
+		fill_round(dc, placeholder, 7, RGB(214, 199, 165));
+		SetTextColor(dc, RGB(112, 87, 56));
+		DrawTextA(dc, "?", -1, &placeholder, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		return;
+	}
+	BITMAP bitmap; GetObject(*image, sizeof(bitmap), &bitmap);
+	int maximum_width = area.right - area.left, maximum_height = area.bottom - area.top;
+	int width = bitmap.bmWidth, height = bitmap.bmHeight;
+	/* Item BMPs are deliberately small. Never enlarge them: scaling a 24x24
+	 * icon to the full recipe-row slot produces the blocky result that the
+	 * collection artwork is intended to avoid. Only shrink oversized assets. */
+	if (width > maximum_width) { height = height * maximum_width / width; width = maximum_width; }
+	if (height > maximum_height) { width = width * maximum_height / height; height = maximum_height; }
+	int x = area.left + (maximum_width - width) / 2;
+	int y = area.top + (maximum_height - height) / 2;
+	HDC source = CreateCompatibleDC(dc); HBITMAP previous = (HBITMAP)SelectObject(source, *image);
+	TransparentBlt(dc, x, y, width, height, source, 0, 0, bitmap.bmWidth, bitmap.bmHeight, RGB(255, 0, 255));
+	SelectObject(source, previous); DeleteDC(source);
+}
+
+static void draw_recipe_collection(HDC dc, RECT area, CookingRecipe* recipe) {
+	if (!recipe->collection_attempted && cooking_image_load_budget_ > 0) {
+		--cooking_image_load_budget_;
+		recipe->collection_attempted = 1;
+		char resource[128] = {0};
+		if (!find_item_resource(recipe->product_id, resource, sizeof(resource)))
+			lstrcpynA(resource, recipe->resource_name, sizeof(resource));
+		recipe->collection_image = load_collection_image(resource);
+	}
+	if (!recipe->collection_image) {
+		draw_item_image(dc, area, &recipe->image, &recipe->image_attempted,
+			recipe->product_id, recipe->resource_name);
+		return;
+	}
+	BITMAP bitmap; GetObject(recipe->collection_image, sizeof(bitmap), &bitmap);
+	int maximum_width = area.right - area.left;
+	int maximum_height = area.bottom - area.top;
+	int width = bitmap.bmWidth, height = bitmap.bmHeight;
+	if (width > maximum_width) { height = height * maximum_width / width; width = maximum_width; }
+	if (height > maximum_height) { width = width * maximum_height / height; height = maximum_height; }
+	int x = area.left + (maximum_width - width) / 2;
+	int y = area.top + (maximum_height - height) / 2;
+	HDC source = CreateCompatibleDC(dc);
+	HBITMAP previous = (HBITMAP)SelectObject(source, recipe->collection_image);
+	TransparentBlt(dc, x, y, width, height, source, 0, 0, bitmap.bmWidth, bitmap.bmHeight, RGB(255, 0, 255));
+	SelectObject(source, previous); DeleteDC(source);
 }
 
 static HBITMAP load_album_background(void) {
@@ -1982,6 +2595,538 @@ static LRESULT CALLBACK card_album_proc(HWND window, UINT message, WPARAM w, LPA
 	return DefWindowProcA(window, message, w, l);
 }
 
+static BOOL cooking_recipe_visible(int index) {
+	if (index < 0 || index >= cooking_recipe_count_) return FALSE;
+	const CookingRecipe* recipe = &cooking_recipes_[index];
+	if (cooking_category_ == -2) return !recipe->unlocked && recipe->experiment;
+	if (!recipe->unlocked) return FALSE;
+	return cooking_category_ < 0 || recipe->category == cooking_category_;
+}
+
+static int visible_cooking_count(void) {
+	int count = 0;
+	for (int i = 0; i < cooking_recipe_count_; ++i) if (cooking_recipe_visible(i)) ++count;
+	return count;
+}
+
+static int visible_cooking_index(int position) {
+	for (int i = 0; i < cooking_recipe_count_; ++i)
+		if (cooking_recipe_visible(i) && position-- == 0) return i;
+	return -1;
+}
+
+static void reset_cooking_page(void) {
+	cooking_page_ = 0;
+	cooking_selected_ = visible_cooking_index(0);
+	if (cooking_selected_ < 0) cooking_selected_ = 0;
+	cooking_item_details_open_ = 0;
+}
+
+static BOOL cooking_recipe_can_craft(const CookingRecipe* recipe) {
+	if (!recipe || cooking_mode_ < 1 || cooking_request_pending_) return FALSE;
+	if (!recipe->unlocked && !recipe->experiment) return FALSE;
+	for (int index = 0; index < recipe->ingredient_count; ++index)
+		if (recipe->ingredients[index].owned < recipe->ingredients[index].required) return FALSE;
+	return TRUE;
+}
+
+static void cooking_send_virtual_key(WORD key) {
+	INPUT input[2];
+	ZeroMemory(input, sizeof(input));
+	input[0].type = input[1].type = INPUT_KEYBOARD;
+	input[0].ki.wVk = input[1].ki.wVk = key;
+	input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+	SendInput(2, input, sizeof(INPUT));
+}
+
+static void cooking_send_unicode_text(const char* text) {
+	for (int index = 0; text[index]; ++index) {
+		INPUT input[2];
+		ZeroMemory(input, sizeof(input));
+		input[0].type = input[1].type = INPUT_KEYBOARD;
+		input[0].ki.wScan = input[1].ki.wScan = (WORD)(unsigned char)text[index];
+		input[0].ki.dwFlags = KEYEVENTF_UNICODE;
+		input[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+		SendInput(2, input, sizeof(INPUT));
+		Sleep(8);
+	}
+}
+
+static BOOL cooking_focus_game(void) {
+	if (!game_ || !IsWindow(game_)) return FALSE;
+	DWORD game_thread = GetWindowThreadProcessId(game_, NULL);
+	DWORD current_thread = GetCurrentThreadId();
+	BOOL attached = game_thread != current_thread && AttachThreadInput(current_thread, game_thread, TRUE);
+	SetForegroundWindow(game_);
+	BringWindowToTop(game_);
+	SetFocus(game_);
+	if (attached) AttachThreadInput(current_thread, game_thread, FALSE);
+	return GetForegroundWindow() == game_;
+}
+
+static DWORD WINAPI cooking_request_thread(void* parameter) {
+	CookingRequest* request = (CookingRequest*)parameter;
+	const int recipe_id = request->recipe_id;
+	const LONG request_serial = request->serial;
+	HeapFree(GetProcessHeap(), 0, request);
+	char command[40];
+	if (cooking_session_token_ == 0) {
+		log_line("Recipe Book request rejected locally: no Chef session token.");
+		if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0)) {
+			cooking_result_ = 0;
+			cooking_result_received_ = 1;
+			cooking_request_pending_ = 0;
+			InterlockedExchange(&cooking_progress_start_, 0);
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
+		return 0;
+	}
+	CookingRecipe* requested_recipe = cooking_recipe_by_id(recipe_id);
+	const BOOL experimenting = requested_recipe && !requested_recipe->unlocked;
+	wsprintfA(command, experimenting ? "@hrocook %d %lu E" : "@hrocook %d %lu",
+		recipe_id, cooking_session_token_);
+	char log_message[96];
+	wsprintfA(log_message, "Recipe Book request %ld: %s", request_serial, command);
+	log_line(log_message);
+	if (!cooking_focus_game()) {
+		log_line("Recipe Book request failed: game window did not receive focus.");
+		if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0)) {
+			cooking_result_ = 0;
+			cooking_result_received_ = 1;
+			cooking_request_pending_ = 0;
+			InterlockedExchange(&cooking_progress_start_, 0);
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
+		return 0;
+	}
+	// Give the recipe a visible preparation phase before asking the server to
+	// consume ingredients. The server revalidates the inventory at completion.
+	DWORD progress_started = (DWORD)InterlockedCompareExchange(&cooking_progress_start_, 0, 0);
+	while (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0) &&
+		cooking_request_pending_) {
+		DWORD elapsed = GetTickCount() - progress_started;
+		if (elapsed >= COOKING_PROGRESS_DURATION_MS) break;
+		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		Sleep(33);
+	}
+	if (request_serial != InterlockedCompareExchange(&cooking_request_serial_, 0, 0) ||
+		!cooking_request_pending_) return 0;
+	if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+
+	// Packet replay is not safe with rAthena packet-header obfuscation: the
+	// encoded header changes as the session advances. Always let the client
+	// generate a fresh chat packet. The preparation animation lasts 2.5 seconds,
+	// so reacquire focus here, immediately before opening the chat input.
+	if (!cooking_focus_game()) {
+		log_line("Recipe Book request failed: game lost focus before command delivery.");
+		if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0)) {
+			cooking_result_ = 0;
+			cooking_result_received_ = 1;
+			cooking_request_pending_ = 0;
+			InterlockedExchange(&cooking_progress_start_, 0);
+			if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+		}
+		return 0;
+	}
+	log_line("Recipe Book game focus restored immediately before command delivery.");
+
+	// RO keeps its chat edit active after the first submitted command. Opening it
+	// again with Enter would close the empty edit, making the following text go
+	// to gameplay shortcuts instead of chat. Open it only for the first request;
+	// repeats write directly into the already active edit.
+	Sleep(120);
+	if (!InterlockedCompareExchange(&cooking_chat_input_ready_, 0, 0)) {
+		cooking_send_virtual_key(VK_RETURN);
+		Sleep(120);
+		log_line("Recipe Book opened the chat input for its first command.");
+	} else {
+		log_line("Recipe Book reused the active chat input.");
+	}
+	cooking_send_unicode_text(command);
+	Sleep(80);
+	cooking_send_virtual_key(VK_RETURN);
+	InterlockedExchange(&cooking_chat_input_ready_, 1);
+
+	// Only this exact request may time itself out. An older worker must never
+	// cancel a later repeated cooking attempt that is already in progress.
+	Sleep(5000);
+	if (request_serial == InterlockedCompareExchange(&cooking_request_serial_, 0, 0) &&
+		cooking_request_pending_) {
+		log_line("Recipe Book request timed out without a server result.");
+		cooking_result_ = 0;
+		cooking_result_received_ = 1;
+		cooking_request_pending_ = 0;
+		InterlockedExchange(&cooking_progress_start_, 0);
+		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
+	}
+	return 0;
+}
+
+static void cooking_request_recipe(int recipe_id) {
+	if (recipe_id < 1 || cooking_request_pending_) return;
+	CookingRequest* request = (CookingRequest*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(CookingRequest));
+	if (!request) return;
+	request->recipe_id = recipe_id;
+	request->serial = InterlockedIncrement(&cooking_request_serial_);
+	cooking_request_pending_ = 1;
+	InterlockedExchange(&cooking_progress_start_, (LONG)GetTickCount());
+	cooking_result_ = 0;
+	cooking_result_received_ = 0;
+	cooking_requested_category_ = cooking_category_;
+	HANDLE thread = CreateThread(NULL, 0, cooking_request_thread, request, 0, NULL);
+	if (thread) CloseHandle(thread);
+	else {
+		HeapFree(GetProcessHeap(), 0, request);
+		cooking_request_pending_ = 0;
+		InterlockedExchange(&cooking_progress_start_, 0);
+	}
+}
+
+static void draw_client_item_description(HDC dc, const char* text, RECT* area) {
+	WCHAR wide[1024];
+	int converted;
+
+	if (!text || !text[0]) return;
+	converted = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1,
+		wide, sizeof(wide) / sizeof(wide[0]));
+	if (!converted)
+		converted = MultiByteToWideChar(949, 0, text, -1,
+			wide, sizeof(wide) / sizeof(wide[0]));
+	if (!converted)
+		converted = MultiByteToWideChar(CP_ACP, 0, text, -1,
+			wide, sizeof(wide) / sizeof(wide[0]));
+	if (converted)
+		DrawTextW(dc, wide, -1, area, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL);
+}
+
+static void draw_cooking_book_window(HDC dc, RECT area) {
+	cooking_image_load_budget_ = cooking_first_paint_ ? 0 : 2;
+	cooking_first_paint_ = 0;
+	/* Use the same ornamental book asset as Card Album so the recetario is a
+	 * single integrated book rather than a floating panel drawn over one. */
+	if (!card_album_background_attempted_) {
+		card_album_background_attempted_ = 1;
+		card_album_background_ = load_card_album_background();
+		log_line(card_album_background_ ? "Recipe Book background loaded from Card Album asset." :
+			"Recipe Book background missing; using clean fallback.");
+	}
+	if (card_album_background_) {
+		BITMAP bitmap; GetObject(card_album_background_, sizeof(bitmap), &bitmap);
+		HDC source = CreateCompatibleDC(dc);
+		HBITMAP previous = (HBITMAP)SelectObject(source, card_album_background_);
+		SetStretchBltMode(dc, HALFTONE);
+		StretchBlt(dc, 0, 0, area.right, area.bottom, source, 0, 0,
+			bitmap.bmWidth, bitmap.bmHeight, SRCCOPY);
+		SelectObject(source, previous); DeleteDC(source);
+	} else {
+		fill_color(dc, area, RGB(66, 45, 30));
+		RECT left_page = {18, 14, 356, 486}, right_page = {364, 14, 702, 486};
+		fill_round(dc, left_page, 12, RGB(239, 224, 187));
+		fill_round(dc, right_page, 12, RGB(239, 224, 187));
+	}
+	SetBkMode(dc, TRANSPARENT);
+	HFONT title_font = CreateFontA(-21, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
+	HFONT normal_font = CreateFontA(-15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
+	HFONT small_font = CreateFontA(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Segoe UI");
+	HFONT old_font = (HFONT)SelectObject(dc, title_font);
+	RECT title_icon = {102, 24, 134, 56};
+	draw_item_image(dc, title_icon, &cooking_title_icon_, &cooking_title_icon_attempted_, 5026, "Chef_Hat");
+	SetTextColor(dc, RGB(74, 43, 25));
+	RECT title = {140, 27, 314, 53}; DrawTextA(dc, "Recipe Book", -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+	RECT close_box = {660, 23, 682, 45}; fill_round(dc, close_box, 5, RGB(91, 38, 31));
+	HBRUSH close_border = CreateSolidBrush(RGB(190, 141, 63));
+	FrameRect(dc, &close_box, close_border); DeleteObject(close_border);
+	SetTextColor(dc, RGB(255, 221, 216)); DrawTextA(dc, "X", -1, &close_box, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+	SelectObject(dc, small_font);
+	RECT category_box = {45, 61, 334, 87};
+	fill_round(dc, category_box, 5, RGB(222, 199, 153));
+	HBRUSH category_border = CreateSolidBrush(RGB(154, 124, 78));
+	FrameRect(dc, &category_box, category_border); DeleteObject(category_border);
+	SetTextColor(dc, RGB(64, 42, 23));
+	RECT category_label = {55, 61, 299, 87};
+	const char* selected_category = cooking_category_ == -2 ? "Unknown Recipes" :
+		cooking_category_ < 0 ? "All recipes" : cooking_categories_[cooking_category_];
+	DrawTextA(dc, selected_category, -1, &category_label, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+	RECT category_arrow = {301, 61, 328, 87};
+	DrawTextA(dc, cooking_category_dropdown_ ? "^" : "v", -1, &category_arrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+	int visible = visible_cooking_count();
+	int pages = visible > 0 ? (visible + 5) / 6 : 1;
+	if (cooking_page_ >= pages) cooking_page_ = pages - 1;
+	SelectObject(dc, normal_font);
+	for (int slot = 0; slot < 6; ++slot) {
+		int index = visible_cooking_index(cooking_page_ * 6 + slot);
+		if (index < 0) break;
+		CookingRecipe* recipe = &cooking_recipes_[index];
+		int row = slot, top = 95 + row * 55;
+		RECT cell = {45, top, 334, top + 48};
+		fill_round(dc, cell, 5, index == cooking_selected_ ? RGB(225, 190, 111) : RGB(239, 226, 190));
+		HBRUSH cell_border = CreateSolidBrush(index == cooking_selected_ ? RGB(177, 92, 25) : RGB(210, 185, 137));
+		FrameRect(dc, &cell, cell_border); DeleteObject(cell_border);
+		RECT recipe_rule = {91, top + 44, 323, top + 45};
+		fill_color(dc, recipe_rule, RGB(210, 185, 137));
+		RECT icon = {51, top + 4, 84, top + 43};
+		if (recipe->unlocked)
+			draw_item_image(dc, icon, &recipe->image, &recipe->image_attempted, recipe->product_id, recipe->resource_name);
+		else {
+			SetTextColor(dc, RGB(119, 101, 76));
+			DrawTextA(dc, "?", -1, &icon, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		}
+		SetTextColor(dc, recipe->unlocked ? RGB(62, 42, 25) : RGB(119, 101, 76));
+		RECT name = {91, top + 4, 323, top + 25};
+		DrawTextA(dc, recipe->unlocked ? recipe->name : "???", -1, &name, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+		SelectObject(dc, small_font);
+		char state[64]; wsprintfA(state, recipe->unlocked ? "%d.%02d%% success" : "Experiment to discover",
+			recipe->success_rate / 100, recipe->success_rate % 100);
+		RECT state_area = {91, top + 26, 323, top + 43};
+		SetTextColor(dc, recipe->unlocked ? RGB(39, 116, 81) : RGB(143, 65, 57));
+		DrawTextA(dc, state, -1, &state_area, DT_LEFT | DT_SINGLELINE);
+		SelectObject(dc, normal_font);
+	}
+
+	RECT previous = {45, 435, 117, 462}, next = {262, 435, 334, 462};
+	fill_round(dc, previous, 6, cooking_page_ > 0 ? RGB(42, 91, 106) : RGB(111, 124, 122));
+	fill_round(dc, next, 6, cooking_page_ + 1 < pages ? RGB(42, 91, 106) : RGB(111, 124, 122));
+	SelectObject(dc, small_font); SetTextColor(dc, RGB(241, 238, 218));
+	DrawTextA(dc, "Previous", -1, &previous, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	DrawTextA(dc, "Next", -1, &next, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+	char page[32]; wsprintfA(page, "%d / %d", cooking_page_ + 1, pages);
+	RECT page_area = {145, 435, 234, 462}; SetTextColor(dc, RGB(77, 53, 31));
+	DrawTextA(dc, page, -1, &page_area, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+	if (cooking_recipe_count_ > 0 && cooking_selected_ < cooking_recipe_count_) {
+		CookingRecipe* recipe = &cooking_recipes_[cooking_selected_];
+		RECT product_name = {405, 50, 663, 86};
+		SelectObject(dc, title_font); SetTextColor(dc, RGB(71, 43, 23));
+		DrawTextA(dc, recipe->unlocked ? recipe->name : "???", -1, &product_name,
+			DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+		if (cooking_item_details_open_) {
+			if (!recipe->description_attempted) {
+				recipe->description_attempted = 1;
+				if (!find_item_description(recipe->product_id, recipe->description, sizeof(recipe->description)))
+					lstrcpynA(recipe->description, "No client item description is available.", sizeof(recipe->description));
+			}
+			RECT detail_icon = {494, 92, 574, 172};
+			draw_recipe_collection(dc, detail_icon, recipe);
+			RECT detail_separator = {405, 184, 663, 186}; fill_color(dc, detail_separator, RGB(188, 154, 96));
+			SelectObject(dc, small_font); SetTextColor(dc, RGB(68, 47, 31));
+			RECT description = {410, 198, 658, 402};
+			draw_client_item_description(dc, recipe->description, &description);
+			RECT back_button = {469, 414, 599, 441}; fill_round(dc, back_button, 6, RGB(151, 86, 42));
+			SetTextColor(dc, RGB(255, 241, 202));
+			DrawTextA(dc, "Back to recipe", -1, &back_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		} else {
+			RECT product_icon = {493, 88, 573, 168};
+			if (recipe->unlocked)
+				draw_recipe_collection(dc, product_icon, recipe);
+			else {
+				SelectObject(dc, title_font); SetTextColor(dc, RGB(119, 101, 76));
+				DrawTextA(dc, "?", -1, &product_icon, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			}
+			SelectObject(dc, small_font); char line[128];
+			if (recipe->unlocked)
+				wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
+			else
+				wsprintfA(line, "Unknown dish    Experiment to discover");
+			RECT info = {405, 172, 663, 194}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			BOOL can_craft = cooking_recipe_can_craft(recipe);
+			if (cooking_request_pending_) {
+				RECT progress_bar = {408, 197, 660, 220};
+				fill_round(dc, progress_bar, 5, RGB(191, 174, 142));
+				DWORD started = (DWORD)InterlockedCompareExchange(&cooking_progress_start_, 0, 0);
+				DWORD elapsed = started ? GetTickCount() - started : 0;
+				int progress = elapsed >= COOKING_PROGRESS_DURATION_MS ? 100 :
+					(int)(elapsed * 100 / COOKING_PROGRESS_DURATION_MS);
+				RECT progress_fill = progress_bar;
+				progress_fill.right = progress_fill.left +
+					(progress_fill.right - progress_fill.left) * progress / 100;
+				if (progress_fill.right > progress_fill.left)
+					fill_round(dc, progress_fill, 5, RGB(151, 86, 42));
+				HBRUSH progress_border = CreateSolidBrush(RGB(120, 76, 41));
+				FrameRect(dc, &progress_bar, progress_border); DeleteObject(progress_border);
+				char progress_label[48];
+				wsprintfA(progress_label, progress < 100 ?
+					(recipe->unlocked ? "Preparing dish... %d%%" : "Experimenting... %d%%") :
+					(recipe->unlocked ? "Finishing dish..." : "Testing combination..."), progress);
+				SetTextColor(dc, RGB(255, 241, 202));
+				DrawTextA(dc, progress_label, -1, &progress_bar, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			} else {
+				RECT details_button = {408, 197, 528, 220}; fill_round(dc, details_button, 5, RGB(222, 199, 153));
+				HBRUSH details_border = CreateSolidBrush(RGB(154, 124, 78));
+				FrameRect(dc, &details_button, details_border); DeleteObject(details_border);
+				SetTextColor(dc, RGB(74, 48, 29));
+				DrawTextA(dc, recipe->unlocked ? "Item details" : "Details hidden", -1,
+					&details_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				RECT cook_button = {536, 197, 660, 220};
+				fill_round(dc, cook_button, 5, can_craft ? RGB(151, 86, 42) : RGB(166, 153, 130));
+				SetTextColor(dc, can_craft ? RGB(255, 241, 202) : RGB(226, 216, 196));
+				const char* cook_label = cooking_mode_ < 1 ? "Chef required" :
+					!recipe->unlocked ? (can_craft ? "Experiment" : "Missing items") :
+					can_craft ? "Cook" : "Missing items";
+				DrawTextA(dc, cook_label, -1, &cook_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			}
+			RECT separator = {405, 228, 663, 230}; fill_color(dc, separator, RGB(188, 154, 96));
+			SelectObject(dc, normal_font); SetTextColor(dc, RGB(76, 47, 25));
+			RECT ingredients_title = {408, 237, 660, 258}; DrawTextA(dc, "Required ingredients", -1, &ingredients_title, DT_LEFT | DT_SINGLELINE);
+			SelectObject(dc, small_font);
+			int shown = recipe->ingredient_count > 6 ? 6 : recipe->ingredient_count;
+			for (int i = 0; i < shown; ++i) {
+				CookingIngredient* ingredient = &recipe->ingredients[i];
+				int top = 263 + i * 29;
+				RECT ingredient_icon = {410, top, 438, top + 27};
+				draw_item_image(dc, ingredient_icon, &ingredient->image, &ingredient->image_attempted, ingredient->item_id, ingredient->resource_name);
+				RECT ingredient_name = {446, top, 585, top + 27};
+				SetTextColor(dc, ingredient->owned >= ingredient->required ? RGB(37, 118, 73) : RGB(174, 54, 45));
+				DrawTextA(dc, ingredient->name, -1, &ingredient_name, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+				wsprintfA(line, "%d / %d", ingredient->owned, ingredient->required);
+				RECT amounts = {590, top, 660, top + 27}; DrawTextA(dc, line, -1, &amounts, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+			}
+			RECT failure = {408, 440, 660, 459};
+			const char* footer = cooking_request_pending_ ?
+				(recipe->unlocked ? "Preparing dish..." : "Testing this combination...") :
+				(recipe->unlocked ? "Select Cook to prepare this dish." : "Experimenting consumes the listed ingredients.");
+			COLORREF footer_color = RGB(92, 72, 48);
+			if (cooking_result_received_ && cooking_result_ == 0) { footer = "The dish could not be prepared."; footer_color = RGB(165, 55, 45); }
+			else if (cooking_result_received_ && cooking_result_ == 1) { footer = "Dish prepared successfully."; footer_color = RGB(35, 125, 72); }
+			else if (cooking_result_received_ && cooking_result_ == 2) { footer = "Cooking failed; ingredients consumed."; footer_color = RGB(165, 55, 45); }
+			else if (cooking_result_received_ && cooking_result_ == 3) { footer = "Cooking failed; ingredients preserved."; footer_color = RGB(165, 90, 35); }
+			else if (cooking_result_received_ && cooking_result_ == 4) { footer = "You no longer have the required items."; footer_color = RGB(165, 55, 45); }
+			else if (cooking_result_received_ && cooking_result_ == 5) { footer = "New recipe discovered!"; footer_color = RGB(35, 125, 72); }
+			else if (cooking_result_received_ && cooking_result_ == 6) { footer = "The combination produced no dish."; footer_color = RGB(165, 55, 45); }
+			else if (cooking_result_received_ && cooking_result_ == 8) { footer = "This recipe cannot be discovered by experimenting."; footer_color = RGB(165, 55, 45); }
+			SetTextColor(dc, footer_color);
+			DrawTextA(dc, footer, -1, &failure, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+		}
+	}
+	if (cooking_category_dropdown_) {
+		const int total_options = cooking_category_count_ + 2;
+		const int visible_options = total_options < 10 ? total_options : 10;
+		RECT dropdown_shadow = {48, 93, 338, 97 + visible_options * 28};
+		fill_round(dc, dropdown_shadow, 5, RGB(91, 57, 31));
+		RECT dropdown = {45, 90, 334, 94 + visible_options * 28};
+		fill_round(dc, dropdown, 5, RGB(247, 235, 202));
+		SelectObject(dc, small_font);
+		for (int row = 0; row < visible_options; ++row) {
+			int option = cooking_category_scroll_ + row;
+			if (option >= total_options) break;
+			RECT option_box = {48, 93 + row * 28, 321, 120 + row * 28};
+			int option_category = option == 0 ? -1 : option == 1 ? -2 : option - 2;
+			if (option_category == cooking_category_) fill_color(dc, option_box, RGB(225, 190, 111));
+			SetTextColor(dc, RGB(65, 43, 25));
+			RECT option_text = {57, 93 + row * 28, 312, 120 + row * 28};
+			const char* option_name = option == 0 ? "All recipes" :
+				option == 1 ? "Unknown Recipes" : cooking_categories_[option - 2];
+			DrawTextA(dc, option_name, -1, &option_text,
+				DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+		}
+		if (total_options > visible_options) {
+			RECT scroll_track = {322, 95, 330, 90 + visible_options * 28};
+			fill_round(dc, scroll_track, 3, RGB(211, 190, 148));
+			int thumb_height = (scroll_track.bottom - scroll_track.top) * visible_options / total_options;
+			int maximum_scroll = total_options - visible_options;
+			int thumb_top = scroll_track.top + (scroll_track.bottom - scroll_track.top - thumb_height) *
+				cooking_category_scroll_ / maximum_scroll;
+			RECT thumb = {322, thumb_top, 330, thumb_top + thumb_height};
+			fill_round(dc, thumb, 3, RGB(139, 91, 46));
+		}
+	}
+	SelectObject(dc, old_font); DeleteObject(title_font); DeleteObject(normal_font); DeleteObject(small_font);
+}
+
+static LRESULT CALLBACK cooking_book_proc(HWND window, UINT message, WPARAM w, LPARAM l) {
+	if (message == WM_ERASEBKGND) return 1;
+	if (message == WM_TIMER && w == 1) {
+		if (cooking_book_open_ && IsWindowVisible(window)) InvalidateRect(window, NULL, FALSE);
+		return 0;
+	}
+	if (message == WM_KEYDOWN && w == VK_ESCAPE) {
+		if (cooking_category_dropdown_) {
+			cooking_category_dropdown_ = 0; InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		if (cooking_item_details_open_) {
+			cooking_item_details_open_ = 0; InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		cooking_mode_ = 0; InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0;
+	}
+	if (message == WM_MOUSEWHEEL && cooking_category_dropdown_) {
+		const int total_options = cooking_category_count_ + 2;
+		const int visible_options = total_options < 10 ? total_options : 10;
+		const int maximum_scroll = total_options - visible_options;
+		if (GET_WHEEL_DELTA_WPARAM(w) < 0 && cooking_category_scroll_ < maximum_scroll)
+			++cooking_category_scroll_;
+		else if (GET_WHEEL_DELTA_WPARAM(w) > 0 && cooking_category_scroll_ > 0)
+			--cooking_category_scroll_;
+		InvalidateRect(window, NULL, FALSE); return 0;
+	}
+	if (message == WM_LBUTTONDOWN) {
+		int x = LOWORD(l), y = HIWORD(l);
+		if (x >= 655 && x <= 687 && y >= 18 && y <= 50) { cooking_mode_ = 0; InterlockedExchange(&cooking_book_open_, 0); ShowWindow(window, SW_HIDE); return 0; }
+		if (x >= 45 && x <= 334 && y >= 61 && y <= 87) {
+			cooking_category_dropdown_ = !cooking_category_dropdown_;
+			if (cooking_category_dropdown_) {
+				int selected_option = cooking_category_ == -1 ? 0 :
+					cooking_category_ == -2 ? 1 : cooking_category_ + 2;
+				if (selected_option < cooking_category_scroll_) cooking_category_scroll_ = selected_option;
+				if (selected_option >= cooking_category_scroll_ + 10) cooking_category_scroll_ = selected_option - 9;
+			}
+			InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		if (cooking_category_dropdown_) {
+			const int total_options = cooking_category_count_ + 2;
+			const int visible_options = total_options < 10 ? total_options : 10;
+			if (x >= 45 && x <= 334 && y >= 90 && y < 94 + visible_options * 28) {
+				int row = (y - 93) / 28;
+				if (row < 0) row = 0;
+				int option = cooking_category_scroll_ + row;
+				if (option < total_options) {
+					cooking_category_ = option == 0 ? -1 : option == 1 ? -2 : option - 2;
+					cooking_category_dropdown_ = 0; reset_cooking_page();
+				}
+				InvalidateRect(window, NULL, FALSE); return 0;
+			}
+			cooking_category_dropdown_ = 0;
+			InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		if (!cooking_item_details_open_ && x >= 408 && x <= 528 && y >= 197 && y <= 220 &&
+			cooking_selected_ >= 0 && cooking_selected_ < cooking_recipe_count_ &&
+			cooking_recipes_[cooking_selected_].unlocked) {
+			cooking_item_details_open_ = 1; InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		if (!cooking_item_details_open_ && x >= 536 && x <= 660 && y >= 197 && y <= 220 &&
+			cooking_selected_ >= 0 && cooking_selected_ < cooking_recipe_count_) {
+			CookingRecipe* selected = &cooking_recipes_[cooking_selected_];
+			if (cooking_recipe_can_craft(selected)) {
+				cooking_request_recipe(selected->id);
+				InvalidateRect(window, NULL, FALSE);
+			}
+			return 0;
+		}
+		if (cooking_item_details_open_ && x >= 469 && x <= 599 && y >= 414 && y <= 441) {
+			cooking_item_details_open_ = 0; InvalidateRect(window, NULL, FALSE); return 0;
+		}
+		int pages = (visible_cooking_count() + 5) / 6; if (pages < 1) pages = 1;
+		if (x >= 45 && x <= 117 && y >= 435 && y <= 462 && cooking_page_ > 0) { --cooking_page_; cooking_item_details_open_ = 0; }
+		else if (x >= 262 && x <= 334 && y >= 435 && y <= 462 && cooking_page_ + 1 < pages) { ++cooking_page_; cooking_item_details_open_ = 0; }
+		else if (x >= 45 && x <= 334 && y >= 95 && y < 425) {
+			int slot = (y - 95) / 55; int index = visible_cooking_index(cooking_page_ * 6 + slot);
+			if (index >= 0) { cooking_selected_ = index; cooking_item_details_open_ = 0; }
+		}
+		InvalidateRect(window, NULL, FALSE); return 0;
+	}
+	if (message == WM_PAINT) {
+		PAINTSTRUCT paint; HDC dc = BeginPaint(window, &paint); RECT area; GetClientRect(window, &area);
+		HDC buffer_dc = CreateCompatibleDC(dc); HBITMAP bitmap = CreateCompatibleBitmap(dc, area.right, area.bottom);
+		HBITMAP old = (HBITMAP)SelectObject(buffer_dc, bitmap); draw_cooking_book_window(buffer_dc, area);
+		BitBlt(dc, 0, 0, area.right, area.bottom, buffer_dc, 0, 0, SRCCOPY);
+		SelectObject(buffer_dc, old); DeleteObject(bitmap); DeleteDC(buffer_dc); EndPaint(window, &paint); return 0;
+	}
+	return DefWindowProcA(window, message, w, l);
+}
+
 static DWORD WINAPI hud_thread(void* unused) {
 	(void)unused;
 	hook_recv();
@@ -2026,6 +3171,19 @@ static DWORD WINAPI hud_thread(void* unused) {
 	SetTimer(card_album_, 1, 120, NULL);
 	SetWindowLongPtrA(card_album_, GWLP_HWNDPARENT, (LONG_PTR)game_);
 	log_line(card_album_ ? "Card Album window created." : "ERROR: Card Album creation failed.");
+	WNDCLASSA cooking_class = {0};
+	cooking_class.lpfnWndProc = cooking_book_proc;
+	cooking_class.hInstance = wc.hInstance;
+	cooking_class.hCursor = LoadCursor(NULL, IDC_HAND);
+	cooking_class.lpszClassName = "HROCookingBook";
+	RegisterClassA(&cooking_class);
+	cooking_book_ = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+		cooking_class.lpszClassName, "Recipe Book", WS_POPUP, 0, 0, 720, 500,
+		game_, NULL, cooking_class.hInstance, NULL);
+	SetLayeredWindowAttributes(cooking_book_, 0, 255, LWA_ALPHA);
+	SetTimer(cooking_book_, 1, 120, NULL);
+	SetWindowLongPtrA(cooking_book_, GWLP_HWNDPARENT, (LONG_PTR)game_);
+	log_line(cooking_book_ ? "Cooking Recipe Book window created." : "ERROR: Recipe Book creation failed.");
 	MSG message;
 	for (;;) {
 		while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE)) {
@@ -2041,6 +3199,7 @@ static DWORD WINAPI hud_thread(void* unused) {
 				SetWindowLongPtrA(hud_, GWLP_HWNDPARENT, (LONG_PTR)game_);
 				SetWindowLongPtrA(album_, GWLP_HWNDPARENT, (LONG_PTR)game_);
 				SetWindowLongPtrA(card_album_, GWLP_HWNDPARENT, (LONG_PTR)game_);
+				SetWindowLongPtrA(cooking_book_, GWLP_HWNDPARENT, (LONG_PTR)game_);
 				log_line("HikariRO game window updated.");
 			}
 		}
@@ -2094,6 +3253,17 @@ static DWORD WINAPI hud_thread(void* unused) {
 				if (!was_visible) InvalidateRect(card_album_, NULL, FALSE);
 			}
 		} else ShowWindow(card_album_, SW_HIDE);
+		if (cooking_book_open_ && IsWindowVisible(game_) && !IsIconic(game_)) {
+			RECT client; POINT origin = {0, 0}; GetClientRect(game_, &client); ClientToScreen(game_, &origin);
+			int x = origin.x + (client.right - 720) / 2;
+			int y = origin.y + (client.bottom - 500) / 2;
+			RECT current; GetWindowRect(cooking_book_, &current);
+			if (!IsWindowVisible(cooking_book_) || current.left != x || current.top != y) {
+				BOOL was_visible = IsWindowVisible(cooking_book_);
+				SetWindowPos(cooking_book_, HWND_TOPMOST, x, y, 720, 500, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+				if (!was_visible) InvalidateRect(cooking_book_, NULL, FALSE);
+			}
+		} else ShowWindow(cooking_book_, SW_HIDE);
 		Sleep(33);
 	}
 }
@@ -2121,7 +3291,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album DLL V25.3 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V27.2 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}

@@ -1,0 +1,26 @@
+name: Build x86 client extension
+
+on:
+  push:
+    branches:
+      - hro_cooking_system
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+      - name: Build ddraw.dll
+        shell: cmd
+        run: |
+          cd HRO_Fishing_UI
+          cl /nologo /O2 /LD /MT /W3 ddraw.c miniz.c miniz_tdef.c miniz_tinfl.c miniz_zip.c /link /DEF:ddraw.def /OUT:..\ddraw.dll user32.lib gdi32.lib msimg32.lib ws2_32.lib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HikariRO-Cooking-ddraw-x86
+          path: ddraw.dll
+          if-no-files-found: error
