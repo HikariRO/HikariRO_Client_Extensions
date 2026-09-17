@@ -2629,7 +2629,7 @@ static void reset_cooking_page(void) {
 
 static BOOL cooking_recipe_can_craft(const CookingRecipe* recipe) {
 	if (!recipe || cooking_mode_ < 1 || cooking_request_pending_) return FALSE;
-	if (!recipe->unlocked && (!recipe->experiment || cooking_experiments_left_ < 1)) return FALSE;
+	if (!recipe->unlocked && !recipe->experiment) return FALSE;
 	for (int index = 0; index < recipe->ingredient_count; ++index)
 		if (recipe->ingredients[index].owned < recipe->ingredients[index].required) return FALSE;
 	return TRUE;
@@ -2936,7 +2936,7 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 			if (recipe->unlocked)
 				wsprintfA(line, "Produces: %d    Success: %d.%02d%%", recipe->amount, recipe->success_rate / 100, recipe->success_rate % 100);
 			else
-				wsprintfA(line, "Unknown dish    Experiments left today: %d", cooking_experiments_left_);
+				wsprintfA(line, "Unknown dish    Experiment to discover");
 			RECT info = {405, 172, 663, 194}; SetTextColor(dc, RGB(67, 85, 63)); DrawTextA(dc, line, -1, &info, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			BOOL can_craft = cooking_recipe_can_craft(recipe);
 			if (cooking_request_pending_) {
@@ -2970,7 +2970,6 @@ static void draw_cooking_book_window(HDC dc, RECT area) {
 				fill_round(dc, cook_button, 5, can_craft ? RGB(151, 86, 42) : RGB(166, 153, 130));
 				SetTextColor(dc, can_craft ? RGB(255, 241, 202) : RGB(226, 216, 196));
 				const char* cook_label = cooking_mode_ < 1 ? "Chef required" :
-					!recipe->unlocked && cooking_experiments_left_ < 1 ? "No attempts left" :
 					!recipe->unlocked ? (can_craft ? "Experiment" : "Missing items") :
 					can_craft ? "Cook" : "Missing items";
 				DrawTextA(dc, cook_label, -1, &cook_button, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -3298,7 +3297,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 	(void)reserved;
 	if (reason == DLL_PROCESS_ATTACH) {
 		DisableThreadLibraryCalls(instance);
-		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V27.0 loaded.");
+		log_line("HRO Fishing UI + Card Album + Cooking Recipe Book DLL V27.1 loaded.");
 		load_ddraw();
 		CreateThread(NULL, 0, hud_thread, NULL, 0, NULL);
 	}
