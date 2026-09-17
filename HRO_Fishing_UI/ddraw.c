@@ -2581,9 +2581,9 @@ static DWORD WINAPI cooking_request_thread(void* parameter) {
 		if (cooking_book_) InvalidateRect(cooking_book_, NULL, FALSE);
 		return 0;
 	}
+	// The Recipe Book click leaves keyboard focus outside the RO chat input.
+	// Enter opens chat; Escape must not be sent because RO uses it for Game Options.
 	Sleep(120);
-	cooking_send_virtual_key(VK_ESCAPE);
-	Sleep(80);
 	cooking_send_virtual_key(VK_RETURN);
 	Sleep(120);
 	cooking_send_unicode_text(command);
