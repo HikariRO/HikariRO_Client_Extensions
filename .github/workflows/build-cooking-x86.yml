@@ -20,8 +20,25 @@ jobs:
         run: |
           cd HRO_Fishing_UI
           cl /nologo /O2 /LD /MT /W3 ddraw.c miniz.c miniz_tdef.c miniz_tinfl.c miniz_zip.c /link /DEF:ddraw.def /OUT:..\ddraw.dll user32.lib gdi32.lib msimg32.lib ws2_32.lib
+      - name: Package DLL with SHA-256 manifest
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item ddraw.dll package/ddraw.dll
+          (Get-FileHash package/ddraw.dll -Algorithm SHA256).Hash.ToLowerInvariant() + "  ddraw.dll" | Set-Content package/SHA256SUMS.txt
+          @"
+          HikariRO Bestiary test DLL
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+          File: ddraw.dll (Windows x86)
+          Verify SHA256 against SHA256SUMS.txt before installing.
+          Close HikariRO and back up the existing DLL first.
+          "@ | Set-Content package/README.txt
+          Compress-Archive -Path package/* -DestinationPath HikariRO-Bestiary-x86.zip -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: HikariRO-ddraw-x86-${{ github.ref_name }}
-          path: ddraw.dll
+          name: HikariRO-Bestiary-x86-${{ github.ref_name }}
+          path: |
+            HikariRO-Bestiary-x86.zip
+            package/SHA256SUMS.txt
           if-no-files-found: error
