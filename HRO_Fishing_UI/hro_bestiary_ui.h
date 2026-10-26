@@ -9,49 +9,11 @@ static HroBestRow hrobest_rows_[24];
 static int hrobest_count_,hrobest_page_,hrobest_total_,hrobest_selected_=-1;
 static char hrobest_tail_[256];
 static int hrobest_tail_length_;
-static volatile LONG hrobest_page_request_pending_;
-static DWORD hrobest_request_started_;
-static int hrobest_request_page_=-1;
-static DWORD WINAPI hrobest_request_page_thread(void* argument) {
-    int page=(int)(INT_PTR)argument;
-    char command[48];
-    wsprintfA(command,"@hrobestiary %d",page);
-    if(!game_ || !IsWindow(game_)) {
-        InterlockedExchange(&hrobest_page_request_pending_,0);return 0;
-    }
-    // Let Ragnarok generate the obfuscated chat packet; never replay a packet.
-    DWORD tid=GetWindowThreadProcessId(game_,NULL),mine=GetCurrentThreadId();
-    BOOL attached=(tid!=mine && AttachThreadInput(mine,tid,TRUE));
-    SetForegroundWindow(game_);SetFocus(game_);
-    if(attached)AttachThreadInput(mine,tid,FALSE);
-    Sleep(120);
-    INPUT key[2]={0};key[0].type=key[1].type=INPUT_KEYBOARD;
-    key[0].ki.wVk=key[1].ki.wVk=VK_RETURN;key[1].ki.dwFlags=KEYEVENTF_KEYUP;
-    SendInput(2,key,sizeof(INPUT));Sleep(120);
-    for(const char* p=command;*p;p++) {
-        INPUT input[2]={0};input[0].type=input[1].type=INPUT_KEYBOARD;
-        input[0].ki.wScan=input[1].ki.wScan=(WORD)(unsigned char)*p;
-        input[0].ki.dwFlags=KEYEVENTF_UNICODE;
-        input[1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
-        SendInput(2,input,sizeof(INPUT));
-    }
-    Sleep(90);SendInput(2,key,sizeof(INPUT));
-    // Do not release the request lock until the server finishes the page.
-    return 0;
-}
+/* Paging is intentionally disabled until the client/server request packet
+ * is implemented. Simulated keystrokes steal RO focus and can lock the UI. */
 static void hrobest_request_page(int page) {
-    if(page<0 || page*24>=hrobest_total_ || page==hrobest_page_)return;
-    if(InterlockedCompareExchange(&hrobest_page_request_pending_,0,0)!=0) {
-        // A lost server response must not lock the navigator permanently.
-        if(GetTickCount()-hrobest_request_started_<8000)return;
-        InterlockedExchange(&hrobest_page_request_pending_,0);
-    }
-    if(InterlockedCompareExchange(&hrobest_page_request_pending_,1,0)!=0)return;
-    hrobest_request_started_=GetTickCount();
-    hrobest_request_page_=page;
-    HANDLE thread=CreateThread(NULL,0,hrobest_request_page_thread,(void*)(INT_PTR)page,0,NULL);
-    if(thread)CloseHandle(thread);
-    else InterlockedExchange(&hrobest_page_request_pending_,0);
+    (void)page;
+    MessageBeep(MB_ICONEXCLAMATION);
 }
 
 static void hrobest_draw(HDC dc) {
@@ -100,8 +62,8 @@ static void hrobest_draw(HDC dc) {
             TextOutA(dc,543,261,label,lstrlenA(label));
         }
     } else TextOutA(dc,543,112,"Select a monster",16);
-    TextOutA(dc,30,537,"< PREVIOUS PAGE",15);
-    TextOutA(dc,407,537,"NEXT PAGE >",11);
+    TextOutA(dc,30,537,"Paging temporarily disabled",27);
+    
     TextOutA(dc,780,20,"[X]",3);
     DeleteObject(title); DeleteObject(regular);
 }
@@ -131,8 +93,6 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                     }
                 }
             } else if(data[0]=='E') {
-                InterlockedExchange(&hrobest_page_request_pending_,0);
-                hrobest_request_page_=-1;
                 // The client window remains visible throughout page changes.
             } else if(data[0]=='M' && hrobest_count_<24) {
                 HroBestRow row={0};
