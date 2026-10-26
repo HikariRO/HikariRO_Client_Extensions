@@ -47,51 +47,52 @@ static void hrobest_request_page(int page) {
 
 static void hrobest_draw(HDC dc) {
     RECT bounds={0,0,860,570};
-    HBRUSH bg=CreateSolidBrush(RGB(232,242,247));
+    HBRUSH bg=CreateSolidBrush(RGB(220,231,232));
     FillRect(dc,&bounds,bg); DeleteObject(bg);
     SetBkMode(dc,TRANSPARENT);
-    SetTextColor(dc,RGB(36,75,101));
+    SetTextColor(dc,RGB(63,70,65));
     HFONT title=CreateFontA(27,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,0,0,0,0,"Segoe UI");
     HFONT regular=CreateFontA(17,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,0,0,"Segoe UI");
     SelectObject(dc,title); TextOutA(dc,25,16,"HIKARIRO  /  BESTIARY",21);
     SelectObject(dc,regular);
     char label[128];
-    wsprintfA(label,"Monsters: %d   Page: %d   (Click a tile to inspect)",hrobest_total_,hrobest_page_+1);
+    wsprintfA(label,"MONSTER ARCHIVE     %d species     Page %d / %d",hrobest_total_,hrobest_page_+1,(hrobest_total_+23)/24);
     TextOutA(dc,26,55,label,lstrlenA(label));
-    HBRUSH card=CreateSolidBrush(RGB(250,250,246));
+    HBRUSH card=CreateSolidBrush(RGB(251,247,235));
     RECT left={20,88,514,520},right={526,88,840,520};
     FillRect(dc,&left,card); FillRect(dc,&right,card); DeleteObject(card);
     for(int i=0;i<hrobest_count_;++i) {
         int x=32+(i%4)*119,y=102+(i/4)*69;
         RECT tile={x,y,x+108,y+62};
-        HBRUSH brush=CreateSolidBrush(i==hrobest_selected_?RGB(247,209,141):hrobest_rows_[i].state==2?RGB(206,235,219):hrobest_rows_[i].state==1?RGB(215,232,243):RGB(222,224,226));
+        HBRUSH brush=CreateSolidBrush(i==hrobest_selected_?RGB(240,198,119):hrobest_rows_[i].state==2?RGB(218,229,201):hrobest_rows_[i].state==1?RGB(224,230,222):RGB(231,227,215));
         FillRect(dc,&tile,brush); DeleteObject(brush);
         Rectangle(dc,tile.left,tile.top,tile.right,tile.bottom);
         const HroBestRow* row=&hrobest_rows_[i];
         char text[80];
-        if(row->state==0) lstrcpyA(text,"????");
+        if(row->state==0) lstrcpyA(text,"???");
         else wsprintfA(text,"#%d",row->id);
         TextOutA(dc,x+8,y+7,text,lstrlenA(text));
-        lstrcpynA(text,row->state?row->name:"UNKNOWN",sizeof(text));
+        lstrcpynA(text,row->state?row->name:"UNDISCOVERED",sizeof(text));
         TextOutA(dc,x+8,y+29,text,lstrlenA(text)>13?13:lstrlenA(text));
     }
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
         const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
-        const char* name=row->state?row->name:"UNKNOWN";
-        TextOutA(dc,543,111,name,lstrlenA(name));
+        const char* name=row->state?row->name:"UNDISCOVERED";
+        TextOutA(dc,543,111,"MONSTER DETAILS",15);
+        TextOutA(dc,543,149,name,lstrlenA(name));
         if(row->state==0) lstrcpyA(label,"Not discovered");
         else if(row->state==1) lstrcpyA(label,"Discovered - defeat to unlock");
         else wsprintfA(label,"Defeats: %d",row->kills);
-        TextOutA(dc,543,151,label,lstrlenA(label));
+        TextOutA(dc,543,190,label,lstrlenA(label));
         if(row->state==2) {
             wsprintfA(label,"Level: %d   HP: %d",row->lv,row->hp);
-            TextOutA(dc,543,187,label,lstrlenA(label));
+            TextOutA(dc,543,231,label,lstrlenA(label));
             wsprintfA(label,"Race: %d   Element: %d",row->race,row->element);
-            TextOutA(dc,543,217,label,lstrlenA(label));
+            TextOutA(dc,543,261,label,lstrlenA(label));
         }
     } else TextOutA(dc,543,112,"Select a monster",16);
-    TextOutA(dc,30,537,"< PREV",6);
-    TextOutA(dc,425,537,"NEXT >",6);
+    TextOutA(dc,30,537,"< PREVIOUS PAGE",15);
+    TextOutA(dc,407,537,"NEXT PAGE >",11);
     TextOutA(dc,780,20,"[X]",3);
     DeleteObject(title); DeleteObject(regular);
 }
