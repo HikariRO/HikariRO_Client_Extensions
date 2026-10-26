@@ -7,6 +7,8 @@ typedef struct { int id,state,kills,lv,hp,race,element; char name[56]; } HroBest
 static HWND hrobest_window_;
 static HroBestRow hrobest_rows_[24];
 static int hrobest_count_,hrobest_page_,hrobest_total_,hrobest_selected_=-1;
+static char hrobest_tail_[256];
+static int hrobest_tail_length_;
 static void hrobest_draw(HDC dc) {
     RECT bounds={0,0,860,570};
     HBRUSH bg=CreateSolidBrush(RGB(232,242,247));
@@ -66,7 +68,13 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                 if(sscanf(data,"B|%d|%d",&page,&total)==2) {
                     hrobest_page_=page; hrobest_total_=total;
                     hrobest_count_=0; hrobest_selected_=-1;
-                    ShowWindow(hwnd,SW_SHOWNORMAL); SetForegroundWindow(hwnd);
+                    RECT game_rect;
+                    if(game_ && GetWindowRect(game_,&game_rect)) {
+                        int gx=game_rect.left+(game_rect.right-game_rect.left-860)/2;
+                        int gy=game_rect.top+(game_rect.bottom-game_rect.top-570)/2;
+                        SetWindowPos(hwnd,HWND_TOP,gx,gy,860,570,SWP_SHOWWINDOW);
+                    } else ShowWindow(hwnd,SW_SHOWNORMAL);
+                    SetForegroundWindow(hwnd);
                 }
             } else if(data[0]=='M' && hrobest_count_<24) {
                 HroBestRow row={0};
@@ -106,21 +114,52 @@ static void hrobest_create(void) {
         ShowWindow(hrobest_window_,SW_HIDE);
     }
 }
+/* Reassemble markers across recv boundaries and suppress the complete
+ * control message before Ragnarok's normal chat renderer sees it. */
 static void hrobest_receive(char* data,int length) {
     static const char marker[]="HROBEST|";
-    for(int i=0;i+8<length;i++) {
-        if(memcmp(data+i,marker,8))continue;
+    char merged[8448];
+    int copy=length>8192?8192:length;
+    if(copy<=0)return;
+    memcpy(merged,hrobest_tail_,hrobest_tail_length_);
+    memcpy(merged+hrobest_tail_length_,data+length-copy,copy);
+    int total=hrobest_tail_length_+copy;
+    int incomplete=-1;
+    for(int i=0;i+8<=total;i++) {
+        if(memcmp(merged+i,marker,8))continue;
         int end=i+8;
-        while(end<length && data[end]!=';' && end-i<240)end++;
-        if(end>=length || data[end]!=';')continue;
+        while(end<total && merged[end]!=';' && end-i<240)end++;
+        if(end>=total || merged[end]!=';') {incomplete=i;break;}
         int n=end-i-8;
         char* record=(char*)HeapAlloc(GetProcessHeap(),0,n+1);
         if(record && hrobest_window_) {
-            memcpy(record,data+i+8,n);record[n]=0;
+            memcpy(record,merged+i+8,n);record[n]=0;
             if(!PostMessageA(hrobest_window_,HROBEST_WM_RECORD,0,(LPARAM)record))
                 HeapFree(GetProcessHeap(),0,record);
-        } else if(record) HeapFree(GetProcessHeap(),0,record);
-        memset(data+i,0,end-i+1);
+        } else if(record)HeapFree(GetProcessHeap(),0,record);
         i=end;
+    }
+    if(incomplete>=0) {
+        hrobest_tail_length_=total-incomplete;
+        if(hrobest_tail_length_>255)hrobest_tail_length_=255;
+        memcpy(hrobest_tail_,merged+total-hrobest_tail_length_,hrobest_tail_length_);
+    } else {
+        hrobest_tail_length_=total>7?7:total;
+        memcpy(hrobest_tail_,merged+total-hrobest_tail_length_,hrobest_tail_length_);
+    }
+    for(int i=0;i+8<=length;i++) {
+        if(memcmp(data+i,marker,8))continue;
+        data[i]=0;
+    }
+    for(int n=7;n>=4;n--) {
+        if(length>=n && !memcmp(data+length-n,marker,n)) {
+            data[length-n]=0;break;
+        }
+    }
+    /* Suppress continuation of a marker split between recv calls. */
+    for(int n=1;n<8;n++) {
+        if(total>=n && hrobest_tail_length_>=n && length>=8-n &&
+           !memcmp(merged+hrobest_tail_length_-n,marker,n) &&
+           !memcmp(data,marker+n,8-n)) {data[0]=0;break;}
     }
 }
