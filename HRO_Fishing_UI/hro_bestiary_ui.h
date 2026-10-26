@@ -74,7 +74,12 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                         int gy=game_rect.top+(game_rect.bottom-game_rect.top-570)/2;
                         SetWindowPos(hwnd,HWND_TOP,gx,gy,860,570,SWP_SHOWWINDOW);
                     } else ShowWindow(hwnd,SW_SHOWNORMAL);
+                    // Activate and focus this interactive window rather than the RO game window.
+                    SetWindowPos(hwnd,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
+                    SetWindowPos(hwnd,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
                     SetForegroundWindow(hwnd);
+                    SetActiveWindow(hwnd);
+                    SetFocus(hwnd);
                 }
             } else if(data[0]=='M' && hrobest_count_<24) {
                 HroBestRow row={0};
@@ -86,6 +91,8 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         }
         return 0;
     }
+    if(msg==WM_MOUSEACTIVATE)return MA_ACTIVATE;
+    if(msg==WM_SETCURSOR) { SetCursor(LoadCursor(NULL,IDC_ARROW));return TRUE; }
     if(msg==WM_ERASEBKGND)return 1;
     if(msg==WM_PAINT) { PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);hrobest_draw(dc);EndPaint(hwnd,&ps);return 0; }
     if(msg==WM_KEYDOWN && w==VK_ESCAPE) {ShowWindow(hwnd,SW_HIDE);return 0;}
@@ -104,13 +111,13 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
 }
 static void hrobest_create(void) {
     WNDCLASSA wc={0};wc.lpfnWndProc=hrobest_proc;
+    wc.hCursor=LoadCursor(NULL,IDC_ARROW);
     wc.hInstance=GetModuleHandleA("ddraw.dll");
     wc.lpszClassName="HROBestiaryWindow";
     RegisterClassA(&wc);
     hrobest_window_=CreateWindowExA(WS_EX_TOOLWINDOW,wc.lpszClassName,"HikariRO Bestiary",
-        WS_POPUP|WS_CLIPSIBLINGS,0,0,860,570,game_,NULL,wc.hInstance,NULL);
+        WS_POPUP|WS_CLIPSIBLINGS,0,0,860,570,NULL,NULL,wc.hInstance,NULL);
     if(hrobest_window_) {
-        SetWindowLongPtrA(hrobest_window_,GWLP_HWNDPARENT,(LONG_PTR)game_);
         ShowWindow(hrobest_window_,SW_HIDE);
     }
 }
