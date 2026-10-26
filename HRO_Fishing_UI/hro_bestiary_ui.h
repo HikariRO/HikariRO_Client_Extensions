@@ -156,10 +156,15 @@ static void hrobest_receive(char* data,int length) {
             data[length-n]=0;break;
         }
     }
-    /* Suppress continuation of a marker split between recv calls. */
-    for(int n=1;n<8;n++) {
-        if(total>=n && hrobest_tail_length_>=n && length>=8-n &&
-           !memcmp(merged+hrobest_tail_length_-n,marker,n) &&
-           !memcmp(data,marker+n,8-n)) {data[0]=0;break;}
+    /* If the previous receive ended with a partial prefix, prevent the
+       continuation from reaching the normal chat renderer. */
+    if(total>copy && length>0) {
+        for(int n=1;n<8;n++) {
+            if(hrobest_tail_length_>=n && length>=8-n &&
+               !memcmp(merged+total-copy-n,marker,n) &&
+               !memcmp(data,marker+n,8-n)) {
+                data[0]=0;break;
+            }
+        }
     }
 }
