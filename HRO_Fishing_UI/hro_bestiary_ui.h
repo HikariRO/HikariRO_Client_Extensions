@@ -10,6 +10,8 @@ static int hrobest_count_,hrobest_page_,hrobest_total_,hrobest_selected_=-1;
 static char hrobest_tail_[256];
 static int hrobest_tail_length_;
 static volatile LONG hrobest_page_request_pending_;
+static DWORD hrobest_request_started_;
+static int hrobest_request_page_=-1;
 static DWORD WINAPI hrobest_request_page_thread(void* argument) {
     int page=(int)(INT_PTR)argument;
     char command[48];
@@ -34,12 +36,19 @@ static DWORD WINAPI hrobest_request_page_thread(void* argument) {
         SendInput(2,input,sizeof(INPUT));
     }
     Sleep(90);SendInput(2,key,sizeof(INPUT));
-    InterlockedExchange(&hrobest_page_request_pending_,0);
+    // Do not release the request lock until the server finishes the page.
     return 0;
 }
 static void hrobest_request_page(int page) {
     if(page<0 || page*24>=hrobest_total_ || page==hrobest_page_)return;
+    if(InterlockedCompareExchange(&hrobest_page_request_pending_,0,0)!=0) {
+        // A lost server response must not lock the navigator permanently.
+        if(GetTickCount()-hrobest_request_started_<8000)return;
+        InterlockedExchange(&hrobest_page_request_pending_,0);
+    }
     if(InterlockedCompareExchange(&hrobest_page_request_pending_,1,0)!=0)return;
+    hrobest_request_started_=GetTickCount();
+    hrobest_request_page_=page;
     HANDLE thread=CreateThread(NULL,0,hrobest_request_page_thread,(void*)(INT_PTR)page,0,NULL);
     if(thread)CloseHandle(thread);
     else InterlockedExchange(&hrobest_page_request_pending_,0);
@@ -103,8 +112,10 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
             if(data[0]=='B') {
                 int page=0,total=0;
                 if(sscanf(data,"B|%d|%d",&page,&total)==2) {
+                    BOOL already_open=IsWindowVisible(hwnd);
                     hrobest_page_=page; hrobest_total_=total;
                     hrobest_count_=0; hrobest_selected_=-1;
+                    if(!already_open) {
                     RECT game_rect;
                     if(game_ && GetWindowRect(game_,&game_rect)) {
                         int gx=game_rect.left+(game_rect.right-game_rect.left-860)/2;
@@ -117,7 +128,12 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                     SetForegroundWindow(hwnd);
                     SetActiveWindow(hwnd);
                     SetFocus(hwnd);
+                    }
                 }
+            } else if(data[0]=='E') {
+                InterlockedExchange(&hrobest_page_request_pending_,0);
+                hrobest_request_page_=-1;
+                // The client window remains visible throughout page changes.
             } else if(data[0]=='M' && hrobest_count_<24) {
                 HroBestRow row={0};
                 if(sscanf(data,"M|%d|%d|%d|%d|%d|%d|%d|%55[^;]",&row.id,&row.state,&row.kills,&row.lv,&row.hp,&row.race,&row.element,row.name)==8)
