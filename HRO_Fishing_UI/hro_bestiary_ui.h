@@ -9,6 +9,35 @@ static HroBestRow hrobest_rows_[24];
 static int hrobest_count_,hrobest_page_,hrobest_total_,hrobest_selected_=-1;
 static char hrobest_tail_[256];
 static int hrobest_tail_length_;
+static HBITMAP hrobest_sprite_;
+static int hrobest_sprite_id_=-1;
+static void hrobest_reset_sprite(void) {
+    if(hrobest_sprite_)DeleteObject(hrobest_sprite_);
+    hrobest_sprite_=NULL;hrobest_sprite_id_=-1;
+}
+static void hrobest_draw_sprite(HDC dc,int mob_id,int x,int y,int w,int h) {
+    if(hrobest_sprite_id_!=mob_id) {
+        hrobest_reset_sprite();
+        hrobest_sprite_id_=mob_id;
+        hrobest_sprite_=hrobest_load_sprite_bitmap(mob_id);
+    }
+    if(!hrobest_sprite_)return;
+    BITMAP bmp={0};GetObject(hrobest_sprite_,sizeof(bmp),&bmp);
+    if(!bmp.bmWidth || !bmp.bmHeight)return;
+    HDC src=CreateCompatibleDC(dc);
+    HGDIOBJ old=SelectObject(src,hrobest_sprite_);
+    int width=bmp.bmWidth,height=bmp.bmHeight;
+    if(width>w || height>h) {
+        double scale=(double)w/width;
+        if((double)h/height<scale)scale=(double)h/height;
+        width=(int)(width*scale);height=(int)(height*scale);
+    }
+    SetStretchBltMode(dc,COLORONCOLOR);
+    TransparentBlt(dc,x+(w-width)/2,y+(h-height)/2,width,height,
+        src,0,0,bmp.bmWidth,bmp.bmHeight,RGB(255,0,255));
+    SelectObject(src,old);DeleteDC(src);
+}
+
 /* Paging is intentionally disabled until the client/server request packet
  * is implemented. Simulated keystrokes steal RO focus and can lock the UI. */
 static void hrobest_request_page(int page) {
@@ -55,6 +84,7 @@ static void hrobest_draw(HDC dc) {
         else if(row->state==1) lstrcpyA(label,"Discovered - defeat to unlock");
         else wsprintfA(label,"Defeats: %d",row->kills);
         TextOutA(dc,543,190,label,lstrlenA(label));
+        if(row->state>0)hrobest_draw_sprite(dc,row->id,560,310,240,180);
         if(row->state==2) {
             wsprintfA(label,"Level: %d   HP: %d",row->lv,row->hp);
             TextOutA(dc,543,231,label,lstrlenA(label));
@@ -76,7 +106,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                 if(sscanf(data,"B|%d|%d",&page,&total)==2) {
                     BOOL already_open=IsWindowVisible(hwnd);
                     hrobest_page_=page; hrobest_total_=total;
-                    hrobest_count_=0; hrobest_selected_=-1;
+                    hrobest_count_=0; hrobest_selected_=-1;hrobest_reset_sprite();
                     if(!already_open) {
                     RECT game_rect;
                     if(game_ && GetWindowRect(game_,&game_rect)) {
@@ -122,7 +152,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
         else if(y>=102 && y<516 && x>=32 && x<508) {
             int col=(x-32)/119,row=(y-102)/69,index=row*4+col;
-            if(index>=0 && index<hrobest_count_)hrobest_selected_=index;
+            if(index>=0 && index<hrobest_count_){hrobest_selected_=index;hrobest_reset_sprite();}
         }
         InvalidateRect(hwnd,NULL,TRUE);
         return 0;
