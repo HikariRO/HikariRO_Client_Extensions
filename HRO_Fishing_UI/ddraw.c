@@ -60,7 +60,7 @@ static HBITMAP hrobest_load_sprite_bitmap(int mob_id) {
     if(bitmap && bits) {
         uint32_t* dest=(uint32_t*)bits;
         for(size_t i=0;i<(size_t)frame->width*frame->height;i++)
-            dest[i]=frame->argb[i]&0x00ffffffu;
+            dest[i]=((frame->argb[i]>>24)==0)?0x00ff00ffu:(frame->argb[i]&0x00ffffffu);
     }
     hro_spr_free(&spr);
     return bitmap;
