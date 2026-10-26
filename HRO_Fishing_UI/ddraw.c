@@ -7,6 +7,7 @@
 #include <string.h>
 #include <math.h>
 #include "miniz.h"
+#include "hro_spr_reader.h"
 
 typedef HRESULT (WINAPI *CreateFn)(GUID*, void**, REFIID, void*);
 typedef HRESULT (WINAPI *EnumFn)(void*, void*, DWORD);
@@ -25,6 +26,46 @@ static volatile LONG fishing_level_, fishing_exp_, fishing_next_exp_;
 static volatile LONG gained_exp_;
 static float shown_tension_, shown_distance_;
 static HWND game_, hud_;
+/* The bestiary reads original SPR bytes through the existing client GRF reader.
+ * Resource mapping is optional and contains paths, never duplicate images. */
+static BOOL load_client_file(const char* wanted, BYTE** output, DWORD* output_size);
+static HBITMAP hrobest_load_sprite_bitmap(int mob_id) {
+    char path[256],mapfile[64];
+    wsprintfA(mapfile,"data\\hro_bestiary\\%d.txt",mob_id);
+    BYTE* mapping=NULL;DWORD mapping_size=0;
+    if(!load_client_file(mapfile,&mapping,&mapping_size))return NULL;
+    if(mapping_size==0 || mapping_size>240) {HeapFree(GetProcessHeap(),0,mapping);return NULL;}
+    memcpy(path,mapping,mapping_size);path[mapping_size]=0;
+    HeapFree(GetProcessHeap(),0,mapping);
+    for(DWORD i=0;i<mapping_size;i++)if(path[i]=='\r'||path[i]=='\n'){path[i]=0;break;}
+    if(!strstr(path,".spr"))return NULL;
+    BYTE* raw=NULL;DWORD raw_size=0;
+    if(!load_client_file(path,&raw,&raw_size))return NULL;
+    HroSprFile spr={0};
+    int valid=hro_spr_decode(raw,raw_size,&spr);
+    HeapFree(GetProcessHeap(),0,raw);
+    if(!valid || !spr.images || !spr.images[0].argb) {hro_spr_free(&spr);return NULL;}
+    HroSprImage* frame=&spr.images[0];
+    BITMAPINFO bi={0};
+    bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth=frame->width;
+    bi.bmiHeader.biHeight=-(LONG)frame->height;
+    bi.bmiHeader.biPlanes=1;
+    bi.bmiHeader.biBitCount=32;
+    bi.bmiHeader.biCompression=BI_RGB;
+    void* bits=NULL;
+    HDC dc=GetDC(NULL);
+    HBITMAP bitmap=CreateDIBSection(dc,&bi,DIB_RGB_COLORS,&bits,NULL,0);
+    ReleaseDC(NULL,dc);
+    if(bitmap && bits) {
+        uint32_t* dest=(uint32_t*)bits;
+        for(size_t i=0;i<(size_t)frame->width*frame->height;i++)
+            dest[i]=frame->argb[i]&0x00ffffffu;
+    }
+    hro_spr_free(&spr);
+    return bitmap;
+}
+
 #include "hro_bestiary_ui.h"
 static HWND album_;
 static HWND card_album_;
