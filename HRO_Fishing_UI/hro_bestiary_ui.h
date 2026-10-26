@@ -9,6 +9,42 @@ static HroBestRow hrobest_rows_[24];
 static int hrobest_count_,hrobest_page_,hrobest_total_,hrobest_selected_=-1;
 static char hrobest_tail_[256];
 static int hrobest_tail_length_;
+static volatile LONG hrobest_page_request_pending_;
+static DWORD WINAPI hrobest_request_page_thread(void* argument) {
+    int page=(int)(INT_PTR)argument;
+    char command[48];
+    wsprintfA(command,"@hrobestiary %d",page);
+    if(!game_ || !IsWindow(game_)) {
+        InterlockedExchange(&hrobest_page_request_pending_,0);return 0;
+    }
+    // Let Ragnarok generate the obfuscated chat packet; never replay a packet.
+    DWORD tid=GetWindowThreadProcessId(game_,NULL),mine=GetCurrentThreadId();
+    BOOL attached=(tid!=mine && AttachThreadInput(mine,tid,TRUE));
+    SetForegroundWindow(game_);SetFocus(game_);
+    if(attached)AttachThreadInput(mine,tid,FALSE);
+    Sleep(120);
+    INPUT key[2]={0};key[0].type=key[1].type=INPUT_KEYBOARD;
+    key[0].ki.wVk=key[1].ki.wVk=VK_RETURN;key[1].ki.dwFlags=KEYEVENTF_KEYUP;
+    SendInput(2,key,sizeof(INPUT));Sleep(120);
+    for(const char* p=command;*p;p++) {
+        INPUT input[2]={0};input[0].type=input[1].type=INPUT_KEYBOARD;
+        input[0].ki.wScan=input[1].ki.wScan=(WORD)(unsigned char)*p;
+        input[0].ki.dwFlags=KEYEVENTF_UNICODE;
+        input[1].ki.dwFlags=KEYEVENTF_UNICODE|KEYEVENTF_KEYUP;
+        SendInput(2,input,sizeof(INPUT));
+    }
+    Sleep(90);SendInput(2,key,sizeof(INPUT));
+    InterlockedExchange(&hrobest_page_request_pending_,0);
+    return 0;
+}
+static void hrobest_request_page(int page) {
+    if(page<0 || page*24>=hrobest_total_ || page==hrobest_page_)return;
+    if(InterlockedCompareExchange(&hrobest_page_request_pending_,1,0)!=0)return;
+    HANDLE thread=CreateThread(NULL,0,hrobest_request_page_thread,(void*)(INT_PTR)page,0,NULL);
+    if(thread)CloseHandle(thread);
+    else InterlockedExchange(&hrobest_page_request_pending_,0);
+}
+
 static void hrobest_draw(HDC dc) {
     RECT bounds={0,0,860,570};
     HBRUSH bg=CreateSolidBrush(RGB(232,242,247));
@@ -95,10 +131,18 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
     if(msg==WM_SETCURSOR) { SetCursor(LoadCursor(NULL,IDC_ARROW));return TRUE; }
     if(msg==WM_ERASEBKGND)return 1;
     if(msg==WM_PAINT) { PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);hrobest_draw(dc);EndPaint(hwnd,&ps);return 0; }
-    if(msg==WM_KEYDOWN && w==VK_ESCAPE) {ShowWindow(hwnd,SW_HIDE);return 0;}
+    if(msg==WM_KEYDOWN) {
+        if(w==VK_ESCAPE)ShowWindow(hwnd,SW_HIDE);
+        else if(w==VK_RIGHT || w==VK_NEXT)hrobest_request_page(hrobest_page_+1);
+        else if(w==VK_LEFT || w==VK_PRIOR)hrobest_request_page(hrobest_page_-1);
+        return 0;
+    }
+    if(msg==WM_MOUSEWHEEL) { hrobest_request_page(hrobest_page_+(GET_WHEEL_DELTA_WPARAM(w)<0?1:-1));return 0; }
     if(msg==WM_LBUTTONDOWN) {
         int x=LOWORD(l),y=HIWORD(l);
         if(x>765 && y<48) ShowWindow(hwnd,SW_HIDE);
+        else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
+        else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
         else if(y>=102 && y<516 && x>=32 && x<508) {
             int col=(x-32)/119,row=(y-102)/69,index=row*4+col;
             if(index>=0 && index<hrobest_count_)hrobest_selected_=index;
