@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - hro_cooking_system
+      - hro_bestiary_ui_test
   workflow_dispatch:
 
 jobs:
@@ -21,6 +22,6 @@ jobs:
           cl /nologo /O2 /LD /MT /W3 ddraw.c miniz.c miniz_tdef.c miniz_tinfl.c miniz_zip.c /link /DEF:ddraw.def /OUT:..\ddraw.dll user32.lib gdi32.lib msimg32.lib ws2_32.lib
       - uses: actions/upload-artifact@v4
         with:
-          name: HikariRO-Cooking-ddraw-x86
+          name: HikariRO-ddraw-x86-${{ github.ref_name }}
           path: ddraw.dll
           if-no-files-found: error
