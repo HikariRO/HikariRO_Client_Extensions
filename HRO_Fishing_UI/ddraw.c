@@ -25,6 +25,7 @@ static volatile LONG fishing_level_, fishing_exp_, fishing_next_exp_;
 static volatile LONG gained_exp_;
 static float shown_tension_, shown_distance_;
 static HWND game_, hud_;
+#include "hro_bestiary_ui.h"
 static HWND album_;
 static HWND card_album_;
 static HWND cooking_book_;
@@ -622,6 +623,7 @@ static void parse_marker(char* data, int length) {
 	parse_album_stream(data, length);
 	parse_card_stream(data, length);
 	parse_cooking_stream(data, length);
+	hrobest_receive(data, length);
 	suppress_storage_stream(data, length);
 	for (int i = 0; i + 8 < length; ++i) {
 		if (!bytes_equal((BYTE*)data + i, "HROFISH|", 8)) continue;
@@ -3177,6 +3179,7 @@ static DWORD WINAPI hud_thread(void* unused) {
 	cooking_class.hCursor = LoadCursor(NULL, IDC_HAND);
 	cooking_class.lpszClassName = "HROCookingBook";
 	RegisterClassA(&cooking_class);
+	hrobest_create();
 	cooking_book_ = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_LAYERED,
 		cooking_class.lpszClassName, "Recipe Book", WS_POPUP, 0, 0, 720, 500,
 		game_, NULL, cooking_class.hInstance, NULL);
