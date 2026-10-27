@@ -488,7 +488,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         return 0;
     }
     if(msg==WM_KEYDOWN) {
-        if(w==VK_ESCAPE) {if(hrobest_search_active_)hrobest_search_active_=0;else ShowWindow(hwnd,SW_HIDE);}
+        if(w==VK_ESCAPE) {hrobest_search_active_=0;ShowWindow(hwnd,SW_HIDE);}
         else if(w==VK_RIGHT || w==VK_NEXT)hrobest_request_page(hrobest_page_+1);
         else if(w==VK_LEFT || w==VK_PRIOR)hrobest_request_page(hrobest_page_-1);
         return 0;
@@ -497,7 +497,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
     if(msg==WM_LBUTTONDOWN) {
         POINT pt=hrobest_to_logical(hwnd,l);
         int x=pt.x,y=pt.y;
-        if(x>765 && y<40) ShowWindow(hwnd,SW_HIDE);
+        if(x>=765 && x<=860 && y>=0 && y<=44) {hrobest_search_active_=0;ShowWindow(hwnd,SW_HIDE);}
         else if(x>=535 && x<=832 && y>=45 && y<=79)hrobest_search_active_=1;
         else if(y>=499 && y<522 && x>=540 && x<825 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
             const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
@@ -523,7 +523,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         InvalidateRect(hwnd,NULL,TRUE);
         return 0;
     }
-    if(msg==WM_CLOSE){ShowWindow(hwnd,SW_HIDE);return 0;}
+    if(msg==WM_CLOSE){hrobest_search_active_=0;ShowWindow(hwnd,SW_HIDE);return 0;}
     return DefWindowProcA(hwnd,msg,w,l);
 }
 static void hrobest_create(void) {
