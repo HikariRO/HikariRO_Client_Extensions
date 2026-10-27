@@ -3,7 +3,7 @@
  * State 0 never transmits a monster name or stats.
  */
 #define HROBEST_WM_RECORD (WM_APP + 173)
-typedef struct { int id,state,kills,lv,hp,race,element; char name[56]; } HroBestRow;
+typedef struct { int id,state,kills,lv,hp,race,element; char name[56]; int stats[12]; } HroBestRow;
 static HWND hrobest_window_;
 static HroBestRow hrobest_rows_[24];
 static int hrobest_count_,hrobest_page_,hrobest_total_,hrobest_selected_=-1;
@@ -166,12 +166,20 @@ static void hrobest_draw(HDC dc) {
         else if(row->state==1) lstrcpyA(label,"Discovered - defeat to unlock");
         else wsprintfA(label,"Defeats: %d",row->kills);
         TextOutA(dc,543,190,label,lstrlenA(label));
-        if(row->state>0)hrobest_draw_sprite(dc,row->id,row->name,560,310,240,180);
+        if(row->state>0)hrobest_draw_sprite(dc,row->id,row->name,560,380,240,125);
         if(row->state==2) {
             wsprintfA(label,"Level: %d   HP: %d",row->lv,row->hp);
             TextOutA(dc,543,231,label,lstrlenA(label));
             wsprintfA(label,"Race: %d   Element: %d",row->race,row->element);
-            TextOutA(dc,543,261,label,lstrlenA(label));
+            TextOutA(dc,543,255,label,lstrlenA(label));
+            wsprintfA(label,"ATK %d-%d  DEF %d  MDEF %d",row->stats[0],row->stats[1],row->stats[2],row->stats[3]);
+            TextOutA(dc,543,280,label,lstrlenA(label));
+            wsprintfA(label,"STR %d  AGI %d  VIT %d",row->stats[4],row->stats[5],row->stats[6]);
+            TextOutA(dc,543,305,label,lstrlenA(label));
+            wsprintfA(label,"INT %d  DEX %d  LUK %d",row->stats[7],row->stats[8],row->stats[9]);
+            TextOutA(dc,543,330,label,lstrlenA(label));
+            wsprintfA(label,"Base EXP %d  Job EXP %d",row->stats[10],row->stats[11]);
+            TextOutA(dc,543,355,label,lstrlenA(label));
         }
     } else TextOutA(dc,543,112,"Select a monster",16);
     TextOutA(dc,30,537,"< PREV",6);
@@ -224,6 +232,14 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                         if(hrobest_catalog_[i].id==row.id) {
                             hrobest_catalog_[i]=row;break;
                         }
+                    }
+                }
+            } else if(data[0]=='S' && data[1]=='|') {
+                int id=0,v[12]={0};
+                if(sscanf(data,"S|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+                    &id,&v[0],&v[1],&v[2],&v[3],&v[4],&v[5],&v[6],&v[7],&v[8],&v[9],&v[10],&v[11])==13) {
+                    for(int i=0;i<hrobest_catalog_count_;i++)if(hrobest_catalog_[i].id==id && hrobest_catalog_[i].state==2) {
+                        memcpy(hrobest_catalog_[i].stats,v,sizeof(v));break;
                     }
                 }
             } else if(data[0]=='E') {
