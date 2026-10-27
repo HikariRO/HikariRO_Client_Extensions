@@ -213,10 +213,10 @@ static void hrobest_draw(HDC dc) {
         char text[80];
         if(row->state==0) lstrcpyA(text,"???");
         else wsprintfA(text,"#%d",row->id);
-        TextOutA(dc,x+8,y+7,text,lstrlenA(text));
+        TextOutA(dc,x+5,y+3,text,lstrlenA(text));
         lstrcpynA(text,row->state?row->name:"UNDISCOVERED",sizeof(text));
-        TextOutA(dc,x+8,y+29,text,lstrlenA(text)>13?13:lstrlenA(text));
-        hrobest_draw_thumbnail(dc,i,row,x+57,y+5);
+        TextOutA(dc,x+5,y+44,text,lstrlenA(text)>13?13:lstrlenA(text));
+        hrobest_draw_thumbnail(dc,i,row,x+58,y+4);
     }
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
         const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
@@ -262,7 +262,7 @@ static void hrobest_draw(HDC dc) {
             wsprintfA(label,"DROPS   (%d items)",row->drop_count);
             TextOutA(dc,540,387,label,lstrlenA(label));
             SetTextColor(dc,RGB(63,70,65));
-            for(int d=hrobest_drop_offset_;d<row->drop_count && d<hrobest_drop_offset_+4;d++) {
+            for(int d=hrobest_drop_offset_;d<row->drop_count && d<hrobest_drop_offset_+3;d++) {
                 int yy=412+(d-hrobest_drop_offset_)*24;
                 RECT icon={540,yy,561,yy+20};
                 HBRUSH ib=CreateSolidBrush(RGB(232,223,203));
@@ -276,14 +276,14 @@ static void hrobest_draw(HDC dc) {
                 wsprintfA(label,"%d.%02d%%",row->drops[d].rate/100,row->drops[d].rate%100);
                 TextOutA(dc,770,yy+1,label,lstrlenA(label));
             }
-            if(row->drop_count>4) {
+            if(row->drop_count>3) {
                 RECT nav={540,499,824,519};
                 HBRUSH navbg=CreateSolidBrush(RGB(236,226,204));
                 FillRect(dc,&nav,navbg);DeleteObject(navbg);
                 SetTextColor(dc,RGB(90,72,47));
                 TextOutA(dc,550,501,"< PREV",6);
                 wsprintfA(label,"%d-%d / %d",hrobest_drop_offset_+1,
-                    hrobest_drop_offset_+4<row->drop_count?hrobest_drop_offset_+4:row->drop_count,row->drop_count);
+                    hrobest_drop_offset_+3<row->drop_count?hrobest_drop_offset_+3:row->drop_count,row->drop_count);
                 TextOutA(dc,658,501,label,lstrlenA(label));
                 TextOutA(dc,760,501,"NEXT >",6);
             }
@@ -410,8 +410,8 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         else if(x>=535 && x<=832 && y>=45 && y<=79)hrobest_search_active_=1;
         else if(y>=499 && y<522 && x>=540 && x<825 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
             const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
-            if(x<640) {if(hrobest_drop_offset_>0)hrobest_drop_offset_-=4;}
-            else if(x>=750 && hrobest_drop_offset_+4<row->drop_count)hrobest_drop_offset_+=4;
+            if(x<640) {if(hrobest_drop_offset_>0)hrobest_drop_offset_-=3;}
+            else if(x>=750 && hrobest_drop_offset_+3<row->drop_count)hrobest_drop_offset_+=3;
         }
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
