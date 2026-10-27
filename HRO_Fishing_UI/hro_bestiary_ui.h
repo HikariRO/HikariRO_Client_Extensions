@@ -18,6 +18,19 @@ static int hrobest_filtered_[HROBEST_MAX_SPECIES],hrobest_filtered_count_;
 static char hrobest_search_[48];
 static int hrobest_search_active_;
 static int hrobest_drop_offset_;
+/* Catalog IDs arrive sorted. Avoid O(species^2) linear searches for
+ * thousands of name, status and drop records during window opening. */
+static HroBestRow* hrobest_find_catalog(int id) {
+    int lo=0,hi=hrobest_catalog_count_-1;
+    while(lo<=hi) {
+        int mid=lo+(hi-lo)/2;
+        if(hrobest_catalog_[mid].id==id)return &hrobest_catalog_[mid];
+        if(hrobest_catalog_[mid].id<id)lo=mid+1;
+        else hi=mid-1;
+    }
+    return NULL;
+}
+
 #define HROBEST_ICON_CACHE 128
 static struct {int id;HBITMAP bitmap;int attempted;} hrobest_icons_[HROBEST_ICON_CACHE];
 static int hrobest_icon_cursor_;
@@ -369,12 +382,11 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                     if(!end)break;
                     int len=(int)(end-cursor);
                     if(len>0 && len<56) {
-                        for(int i=0;i<hrobest_catalog_count_;i++)
-                            if(hrobest_catalog_[i].id==(int)id && hrobest_catalog_[i].state==0) {
-                                memcpy(hrobest_catalog_[i].name,cursor,len);
-                                hrobest_catalog_[i].name[len]=0;
-                                break;
-                            }
+                        HroBestRow* found=hrobest_find_catalog((int)id);
+                        if(found && found->state==0) {
+                            memcpy(found->name,cursor,len);
+                            found->name[len]=0;
+                        }
                     }
                     cursor=end+1;
                 }
@@ -382,25 +394,21 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                 HroBestRow row={0};
                 if(sscanf(data,"M|%d|%d|%d|%d|%d|%d|%d|%55[^;]",
                     &row.id,&row.state,&row.kills,&row.lv,&row.hp,&row.race,&row.element,row.name)==8) {
-                    for(int i=0;i<hrobest_catalog_count_;i++) {
-                        if(hrobest_catalog_[i].id==row.id) {
-                            hrobest_catalog_[i]=row;break;
-                        }
-                    }
+                    HroBestRow* found=hrobest_find_catalog(row.id);
+                    if(found)*found=row;
                 }
             } else if(data[0]=='S' && data[1]=='|') {
                 int id=0,v[12]={0};
                 if(sscanf(data,"S|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
                     &id,&v[0],&v[1],&v[2],&v[3],&v[4],&v[5],&v[6],&v[7],&v[8],&v[9],&v[10],&v[11])==13) {
-                    for(int i=0;i<hrobest_catalog_count_;i++)if(hrobest_catalog_[i].id==id && hrobest_catalog_[i].state==2) {
-                        memcpy(hrobest_catalog_[i].stats,v,sizeof(v));break;
-                    }
+                    HroBestRow* found=hrobest_find_catalog(id);
+                    if(found && found->state==2)memcpy(found->stats,v,sizeof(v));
                 }
             } else if(data[0]=='D' && data[1]=='|') {
                 int id=0,item_id=0,rate=0;char name[48]={0};
                 if(sscanf(data,"D|%d|%d|%d|%47[^;]",&id,&item_id,&rate,name)==4) {
-                    for(int i=0;i<hrobest_catalog_count_;i++)if(hrobest_catalog_[i].id==id && hrobest_catalog_[i].state==2) {
-                        HroBestRow* row=&hrobest_catalog_[i];
+                    HroBestRow* row=hrobest_find_catalog(id);
+                    if(row && row->state==2) {
                         if(row->drop_count<12) {
                             int d=row->drop_count++;
                             row->drops[d].id=item_id;row->drops[d].rate=rate;
