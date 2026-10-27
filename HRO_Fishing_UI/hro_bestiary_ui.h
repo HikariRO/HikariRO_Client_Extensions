@@ -172,7 +172,7 @@ static void hrobest_draw(HDC dc) {
         else if(row->state==1)lstrcpyA(label,"Discovered - defeat to unlock");
         else wsprintfA(label,"Lv. %d    Defeated: %d",row->lv,row->kills);
         TextOutA(dc,540,133,label,lstrlenA(label));
-        if(row->state>0)hrobest_draw_sprite(dc,row->id,row->name,720,155,100,94);
+        if(row->state>0)hrobest_draw_sprite(dc,row->id,row->name,684,150,146,105);
         if(row->state==2) {
             const char* races[]={"Formless","Undead","Brute","Plant","Insect","Fish","Demon","Demi-Human","Angel","Dragon"};
             const char* elements[]={"Neutral","Water","Earth","Fire","Wind","Poison","Holy","Shadow","Ghost","Undead"};
@@ -218,9 +218,15 @@ static void hrobest_draw(HDC dc) {
                 TextOutA(dc,770,yy+1,label,lstrlenA(label));
             }
             if(row->drop_count>4) {
-                wsprintfA(label,"< %d-%d / %d >",hrobest_drop_offset_+1,
+                RECT nav={540,499,824,519};
+                HBRUSH navbg=CreateSolidBrush(RGB(236,226,204));
+                FillRect(dc,&nav,navbg);DeleteObject(navbg);
+                SetTextColor(dc,RGB(90,72,47));
+                TextOutA(dc,550,501,"< PREV",6);
+                wsprintfA(label,"%d-%d / %d",hrobest_drop_offset_+1,
                     hrobest_drop_offset_+4<row->drop_count?hrobest_drop_offset_+4:row->drop_count,row->drop_count);
-                TextOutA(dc,715,506,label,lstrlenA(label));
+                TextOutA(dc,658,501,label,lstrlenA(label));
+                TextOutA(dc,760,501,"NEXT >",6);
             }
         }
     } else TextOutA(dc,543,112,"Select a monster",16);
@@ -332,10 +338,10 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         int x=LOWORD(l),y=HIWORD(l);
         if(x>765 && y<40) ShowWindow(hwnd,SW_HIDE);
         else if(x>=535 && x<=832 && y>=45 && y<=79)hrobest_search_active_=1;
-        else if(y>=498 && y<522 && x>=700 && x<840 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
+        else if(y>=499 && y<522 && x>=540 && x<825 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
             const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
-            if(x<758) {if(hrobest_drop_offset_>0)hrobest_drop_offset_-=4;}
-            else if(hrobest_drop_offset_+4<row->drop_count)hrobest_drop_offset_+=4;
+            if(x<640) {if(hrobest_drop_offset_>0)hrobest_drop_offset_-=4;}
+            else if(x>=750 && hrobest_drop_offset_+4<row->drop_count)hrobest_drop_offset_+=4;
         }
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
