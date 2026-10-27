@@ -62,9 +62,20 @@ static HBITMAP hrobest_load_sprite_bitmap(int mob_id, const char* mob_name) {
     if(!strstr(path,".spr"))return NULL;
     BYTE* raw=NULL;DWORD raw_size=0;
     if(!load_client_file(path,&raw,&raw_size)) {
+        /* Official monster sprites are stored under the Korean monster
+         * directory, not the NPC directory. Preserve explicit ID mappings. */
+        if(!mapped) {
+            char sprite[96]={0};
+            const char* basename=strrchr(path,'\\');
+            if(basename)lstrcpynA(sprite,basename+1,sizeof(sprite));
+            wsprintfA(path,"data\\sprite\\%s\\%s","\\xB8\\xF3\\xBD\\xBA\\xC5\\xCD",sprite);
+            if(load_client_file(path,&raw,&raw_size))goto hrobest_sprite_loaded;
+        }
+
         char diagnostic[320];wsprintfA(diagnostic,"Bestiary SPR not found in DATA.ini GRFs: %s",path);
         log_line(diagnostic);return NULL;
     }
+hrobest_sprite_loaded:
     HroSprFile spr={0};
     int valid=hro_spr_decode(raw,raw_size,&spr);
     HeapFree(GetProcessHeap(),0,raw);
