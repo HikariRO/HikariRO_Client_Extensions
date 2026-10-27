@@ -95,11 +95,25 @@ static void hrobest_draw_sprite(HDC dc,int mob_id,const char* mob_name,int x,int
     SelectObject(src,old);DeleteDC(src);
 }
 
+static void hrobest_make_gray(HBITMAP bitmap) {
+    if(!bitmap)return;
+    BITMAP bmp={0};
+    if(!GetObject(bitmap,sizeof(bmp),&bmp)||bmp.bmBitCount!=32||!bmp.bmBits)return;
+    unsigned char* pixels=(unsigned char*)bmp.bmBits;
+    int stride=bmp.bmWidthBytes;
+    for(int y=0;y<bmp.bmHeight;y++)for(int x=0;x<bmp.bmWidth;x++) {
+        unsigned char* p=pixels+y*stride+x*4;
+        if(p[0]==255&&p[1]==0&&p[2]==255)continue; /* transparency key */
+        unsigned char gray=(unsigned char)((p[2]*77+p[1]*150+p[0]*29)>>8);
+        p[0]=p[1]=p[2]=gray;
+    }
+}
 static void hrobest_draw_thumbnail(HDC dc,int slot,const HroBestRow* row,int x,int y) {
-    if(slot<0||slot>=24||row->state==0)return;
+    if(slot<0||slot>=24)return;
     if(hrobest_thumb_ids_[slot]!=row->id) {
         if(hrobest_thumbs_[slot])DeleteObject(hrobest_thumbs_[slot]);
         hrobest_thumbs_[slot]=hrobest_load_sprite_bitmap(row->id,row->name);
+        if(row->state==0)hrobest_make_gray(hrobest_thumbs_[slot]);
         hrobest_thumb_ids_[slot]=row->id;
     }
     HBITMAP bitmap=hrobest_thumbs_[slot];
@@ -193,7 +207,7 @@ static void hrobest_draw(HDC dc) {
         TextOutA(dc,x+8,y+7,text,lstrlenA(text));
         lstrcpynA(text,row->state?row->name:"UNDISCOVERED",sizeof(text));
         TextOutA(dc,x+8,y+29,text,lstrlenA(text)>13?13:lstrlenA(text));
-        if(row->state>0)hrobest_draw_thumbnail(dc,i,row,x+57,y+5);
+        hrobest_draw_thumbnail(dc,i,row,x+57,y+5);
     }
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
         const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
@@ -303,6 +317,15 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                     memset(row,0,sizeof(*row));row->id=(int)id;
                     lstrcpyA(row->name,"UNKNOWN");
                     cursor=(*next==',')?next+1:next;
+                }
+            } else if(data[0]=='N' && data[1]=='|') {
+                int id=0;char resource[56]={0};
+                if(sscanf(data,"N|%d|%55[^;]",&id,resource)==2) {
+                    for(int i=0;i<hrobest_catalog_count_;i++)
+                        if(hrobest_catalog_[i].id==id && hrobest_catalog_[i].state==0) {
+                            lstrcpynA(hrobest_catalog_[i].name,resource,sizeof(hrobest_catalog_[i].name));
+                            break;
+                        }
                 }
             } else if(data[0]=='M' && data[1]=='|') {
                 HroBestRow row={0};
