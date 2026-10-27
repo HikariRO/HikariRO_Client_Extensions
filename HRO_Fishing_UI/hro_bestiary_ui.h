@@ -138,7 +138,7 @@ static void hrobest_fit_to_game(HWND hwnd) {
 static POINT hrobest_to_logical(HWND hwnd,LPARAM l) {
     RECT rc={0};GetClientRect(hwnd,&rc);
     int w=rc.right-rc.left,h=rc.bottom-rc.top;
-    POINT pt={GET_X_LPARAM(l),GET_Y_LPARAM(l)};
+    POINT pt={(short)LOWORD(l),(short)HIWORD(l)};
     if(w>0)pt.x=(int)((long long)pt.x*HROBEST_DESIGN_W/w);
     if(h>0)pt.y=(int)((long long)pt.y*HROBEST_DESIGN_H/h);
     return pt;
