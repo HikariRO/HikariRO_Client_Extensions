@@ -30,11 +30,11 @@ static void hrobest_reset_sprite(void) {
     if(hrobest_sprite_)DeleteObject(hrobest_sprite_);
     hrobest_sprite_=NULL;hrobest_sprite_id_=-1;
 }
-static void hrobest_draw_sprite(HDC dc,int mob_id,int x,int y,int w,int h) {
+static void hrobest_draw_sprite(HDC dc,int mob_id,const char* mob_name,int x,int y,int w,int h) {
     if(hrobest_sprite_id_!=mob_id) {
         hrobest_reset_sprite();
         hrobest_sprite_id_=mob_id;
-        hrobest_sprite_=hrobest_load_sprite_bitmap(mob_id);
+        hrobest_sprite_=hrobest_load_sprite_bitmap(mob_id,mob_name);
     }
     if(!hrobest_sprite_)return;
     BITMAP bmp={0};GetObject(hrobest_sprite_,sizeof(bmp),&bmp);
@@ -96,7 +96,7 @@ static void hrobest_draw(HDC dc) {
         else if(row->state==1) lstrcpyA(label,"Discovered - defeat to unlock");
         else wsprintfA(label,"Defeats: %d",row->kills);
         TextOutA(dc,543,190,label,lstrlenA(label));
-        if(row->state>0)hrobest_draw_sprite(dc,row->id,560,310,240,180);
+        if(row->state>0)hrobest_draw_sprite(dc,row->id,row->name,560,310,240,180);
         if(row->state==2) {
             wsprintfA(label,"Level: %d   HP: %d",row->lv,row->hp);
             TextOutA(dc,543,231,label,lstrlenA(label));
