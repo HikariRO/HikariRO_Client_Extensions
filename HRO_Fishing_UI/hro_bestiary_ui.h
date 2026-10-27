@@ -12,6 +12,7 @@ static int hrobest_tail_length_;
 #define HROBEST_MAX_SPECIES 12000
 static HroBestRow hrobest_catalog_[HROBEST_MAX_SPECIES];
 static int hrobest_catalog_count_;
+static void hrobest_reset_sprite(void);
 static void hrobest_show_page(int page) {
     if(page<0 || page*24>=hrobest_catalog_count_)return;
     hrobest_page_=page;
