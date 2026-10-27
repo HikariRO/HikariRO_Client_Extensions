@@ -43,6 +43,7 @@ static void hrobest_filter(void) {
 }
 
 static void hrobest_reset_sprite(void);
+static void hrobest_clear_thumbs(void);
 static void hrobest_show_page(int page) {
     if(page<0 || page*24>=hrobest_filtered_count_)return;
     hrobest_page_=page;
@@ -51,9 +52,18 @@ static void hrobest_show_page(int page) {
     for(int i=0;i<hrobest_count_;i++)hrobest_rows_[i]=hrobest_catalog_[hrobest_filtered_[page*24+i]];
     hrobest_selected_=-1;
     hrobest_reset_sprite();
+    hrobest_clear_thumbs();
     if(hrobest_window_)InvalidateRect(hrobest_window_,NULL,TRUE);
 }
 
+static HBITMAP hrobest_thumbs_[24];
+static int hrobest_thumb_ids_[24];
+static void hrobest_clear_thumbs(void) {
+    for(int i=0;i<24;i++) {
+        if(hrobest_thumbs_[i])DeleteObject(hrobest_thumbs_[i]);
+        hrobest_thumbs_[i]=NULL;hrobest_thumb_ids_[i]=0;
+    }
+}
 static HBITMAP hrobest_sprite_;
 static int hrobest_sprite_id_=-1;
 static void hrobest_reset_sprite(void) {
@@ -83,6 +93,29 @@ static void hrobest_draw_sprite(HDC dc,int mob_id,const char* mob_name,int x,int
     SelectObject(src,old);DeleteDC(src);
 }
 
+static void hrobest_draw_thumbnail(HDC dc,int slot,const HroBestRow* row,int x,int y) {
+    if(slot<0||slot>=24||row->state==0)return;
+    if(hrobest_thumb_ids_[slot]!=row->id) {
+        if(hrobest_thumbs_[slot])DeleteObject(hrobest_thumbs_[slot]);
+        hrobest_thumbs_[slot]=hrobest_load_sprite_bitmap(row->id,row->name);
+        hrobest_thumb_ids_[slot]=row->id;
+    }
+    HBITMAP bitmap=hrobest_thumbs_[slot];
+    if(!bitmap)return;
+    BITMAP bmp={0};GetObject(bitmap,sizeof(bmp),&bmp);
+    if(bmp.bmWidth<=0||bmp.bmHeight<=0)return;
+    int w=bmp.bmWidth,h=bmp.bmHeight;
+    if(w>45||h>38) {
+        double scale=45.0/w;
+        if(38.0/h<scale)scale=38.0/h;
+        w=(int)(w*scale);h=(int)(h*scale);
+    }
+    HDC src=CreateCompatibleDC(dc);
+    HGDIOBJ old=SelectObject(src,bitmap);
+    TransparentBlt(dc,x+(45-w)/2,y+(38-h)/2,w,h,
+        src,0,0,bmp.bmWidth,bmp.bmHeight,RGB(255,0,255));
+    SelectObject(src,old);DeleteDC(src);
+}
 static void hrobest_request_page(int page) {
     hrobest_show_page(page);
 }
@@ -122,6 +155,7 @@ static void hrobest_draw(HDC dc) {
         TextOutA(dc,x+8,y+7,text,lstrlenA(text));
         lstrcpynA(text,row->state?row->name:"UNDISCOVERED",sizeof(text));
         TextOutA(dc,x+8,y+29,text,lstrlenA(text)>13?13:lstrlenA(text));
+        if(row->state>0)hrobest_draw_thumbnail(dc,i,row,x+57,y+5);
     }
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
         const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
