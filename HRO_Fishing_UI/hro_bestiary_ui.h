@@ -15,6 +15,7 @@ static int hrobest_catalog_count_;
 static int hrobest_filtered_[HROBEST_MAX_SPECIES],hrobest_filtered_count_;
 static char hrobest_search_[48];
 static int hrobest_search_active_;
+static int hrobest_drop_offset_;
 static int hrobest_contains(const char* name,const char* query) {
     if(!*query)return 1;
     for(const char* p=name;*p;p++) {
@@ -51,6 +52,7 @@ static void hrobest_show_page(int page) {
     if(hrobest_count_>24)hrobest_count_=24;
     for(int i=0;i<hrobest_count_;i++)hrobest_rows_[i]=hrobest_catalog_[hrobest_filtered_[page*24+i]];
     hrobest_selected_=-1;
+    hrobest_drop_offset_=0;
     hrobest_reset_sprite();
     hrobest_clear_thumbs();
     if(hrobest_window_)InvalidateRect(hrobest_window_,NULL,TRUE);
@@ -160,30 +162,65 @@ static void hrobest_draw(HDC dc) {
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
         const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
         const char* name=row->state?row->name:"UNDISCOVERED";
-        TextOutA(dc,543,111,"MONSTER DETAILS",15);
-        TextOutA(dc,543,149,name,lstrlenA(name));
-        if(row->state==0) lstrcpyA(label,"Not discovered");
-        else if(row->state==1) lstrcpyA(label,"Discovered - defeat to unlock");
-        else wsprintfA(label,"Defeats: %d",row->kills);
-        TextOutA(dc,543,190,label,lstrlenA(label));
-        if(row->state>0)hrobest_draw_sprite(dc,row->id,row->name,740,390,80,95);
+        HFONT heading=CreateFontA(21,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,0,0,0,0,"Segoe UI");
+        HFONT oldfont=(HFONT)SelectObject(dc,heading);
+        SetTextColor(dc,RGB(61,88,104));
+        TextOutA(dc,540,101,name,lstrlenA(name));
+        SelectObject(dc,oldfont);DeleteObject(heading);
+        SetTextColor(dc,RGB(63,70,65));
+        if(row->state==0)lstrcpyA(label,"Not discovered");
+        else if(row->state==1)lstrcpyA(label,"Discovered - defeat to unlock");
+        else wsprintfA(label,"Lv. %d    Defeated: %d",row->lv,row->kills);
+        TextOutA(dc,540,133,label,lstrlenA(label));
+        if(row->state>0)hrobest_draw_sprite(dc,row->id,row->name,720,155,100,94);
         if(row->state==2) {
-            wsprintfA(label,"Level: %d   HP: %d",row->lv,row->hp);
-            TextOutA(dc,543,231,label,lstrlenA(label));
-            wsprintfA(label,"Race: %d   Element: %d",row->race,row->element);
-            TextOutA(dc,543,255,label,lstrlenA(label));
-            wsprintfA(label,"ATK %d-%d  DEF %d  MDEF %d",row->stats[0],row->stats[1],row->stats[2],row->stats[3]);
-            TextOutA(dc,543,280,label,lstrlenA(label));
-            wsprintfA(label,"STR %d  AGI %d  VIT %d",row->stats[4],row->stats[5],row->stats[6]);
-            TextOutA(dc,543,305,label,lstrlenA(label));
-            wsprintfA(label,"INT %d  DEX %d  LUK %d",row->stats[7],row->stats[8],row->stats[9]);
-            TextOutA(dc,543,330,label,lstrlenA(label));
-            wsprintfA(label,"Base EXP %d  Job EXP %d",row->stats[10],row->stats[11]);
-            TextOutA(dc,543,355,label,lstrlenA(label));
-            TextOutA(dc,543,382,"DROPS (base rate)",17);
-            for(int d=0;d<row->drop_count && d<5;d++) {
-                wsprintfA(label,"%s  %d.%02d%%",row->drops[d].name,row->drops[d].rate/100,row->drops[d].rate%100);
-                TextOutA(dc,543,405+d*20,label,lstrlenA(label));
+            const char* races[]={"Formless","Undead","Brute","Plant","Insect","Fish","Demon","Demi-Human","Angel","Dragon"};
+            const char* elements[]={"Neutral","Water","Earth","Fire","Wind","Poison","Holy","Shadow","Ghost","Undead"};
+            const char* race=(row->race>=0&&row->race<10)?races[row->race]:"Other";
+            const char* element=(row->element>=0&&row->element<10)?elements[row->element]:"Other";
+            wsprintfA(label,"%s  /  %s",race,element);
+            TextOutA(dc,540,163,label,lstrlenA(label));
+            wsprintfA(label,"HP  %d",row->hp);
+            TextOutA(dc,540,190,label,lstrlenA(label));
+            RECT line={540,257,825,259};
+            HBRUSH linebrush=CreateSolidBrush(RGB(207,188,150));
+            FillRect(dc,&line,linebrush);DeleteObject(linebrush);
+            SetTextColor(dc,RGB(122,85,40));
+            TextOutA(dc,540,264,"COMBAT",6);
+            SetTextColor(dc,RGB(63,70,65));
+            wsprintfA(label,"ATK %d-%d    DEF %d    MDEF %d",row->stats[0],row->stats[1],row->stats[2],row->stats[3]);
+            TextOutA(dc,540,288,label,lstrlenA(label));
+            wsprintfA(label,"STR %d   AGI %d   VIT %d",row->stats[4],row->stats[5],row->stats[6]);
+            TextOutA(dc,540,309,label,lstrlenA(label));
+            wsprintfA(label,"INT %d   DEX %d   LUK %d",row->stats[7],row->stats[8],row->stats[9]);
+            TextOutA(dc,540,330,label,lstrlenA(label));
+            wsprintfA(label,"EXP  Base %d   Job %d",row->stats[10],row->stats[11]);
+            TextOutA(dc,540,351,label,lstrlenA(label));
+            RECT separator={540,379,825,381};
+            linebrush=CreateSolidBrush(RGB(207,188,150));
+            FillRect(dc,&separator,linebrush);DeleteObject(linebrush);
+            SetTextColor(dc,RGB(122,85,40));
+            wsprintfA(label,"DROPS   (%d items)",row->drop_count);
+            TextOutA(dc,540,387,label,lstrlenA(label));
+            SetTextColor(dc,RGB(63,70,65));
+            for(int d=hrobest_drop_offset_;d<row->drop_count && d<hrobest_drop_offset_+4;d++) {
+                int yy=412+(d-hrobest_drop_offset_)*24;
+                RECT icon={540,yy,561,yy+20};
+                HBRUSH ib=CreateSolidBrush(RGB(232,223,203));
+                FillRect(dc,&icon,ib);DeleteObject(ib);
+                Rectangle(dc,icon.left,icon.top,icon.right,icon.bottom);
+                TextOutA(dc,546,yy+1,"?",1);
+                char itemname[48];lstrcpynA(itemname,row->drops[d].name,sizeof(itemname));
+                for(char* p=itemname;*p;p++)if(*p=='_')*p=' ';
+                if(lstrlenA(itemname)>20)itemname[20]=0;
+                TextOutA(dc,567,yy+1,itemname,lstrlenA(itemname));
+                wsprintfA(label,"%d.%02d%%",row->drops[d].rate/100,row->drops[d].rate%100);
+                TextOutA(dc,770,yy+1,label,lstrlenA(label));
+            }
+            if(row->drop_count>4) {
+                wsprintfA(label,"< %d-%d / %d >",hrobest_drop_offset_+1,
+                    hrobest_drop_offset_+4<row->drop_count?hrobest_drop_offset_+4:row->drop_count,row->drop_count);
+                TextOutA(dc,715,506,label,lstrlenA(label));
             }
         }
     } else TextOutA(dc,543,112,"Select a monster",16);
@@ -295,11 +332,16 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         int x=LOWORD(l),y=HIWORD(l);
         if(x>765 && y<40) ShowWindow(hwnd,SW_HIDE);
         else if(x>=535 && x<=832 && y>=45 && y<=79)hrobest_search_active_=1;
+        else if(y>=498 && y<522 && x>=700 && x<840 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
+            const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
+            if(x<758) {if(hrobest_drop_offset_>0)hrobest_drop_offset_-=4;}
+            else if(hrobest_drop_offset_+4<row->drop_count)hrobest_drop_offset_+=4;
+        }
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
         else if(y>=102 && y<516 && x>=32 && x<508) {
             int col=(x-32)/119,row=(y-102)/69,index=row*4+col;
-            if(index>=0 && index<hrobest_count_){hrobest_selected_=index;hrobest_reset_sprite();}
+            if(index>=0 && index<hrobest_count_){hrobest_selected_=index;hrobest_drop_offset_=0;hrobest_reset_sprite();}
         }
         if(!(x>=535 && x<=832 && y>=45 && y<=79))hrobest_search_active_=0;
         InvalidateRect(hwnd,NULL,TRUE);
