@@ -96,16 +96,25 @@ static void hrobest_draw_sprite(HDC dc,int mob_id,const char* mob_name,int x,int
 }
 
 static void hrobest_make_gray(HBITMAP bitmap) {
+    DIBSECTION dib;
+    BYTE* pixels;
+    int x,y,stride;
     if(!bitmap)return;
-    BITMAP bmp={0};
-    if(!GetObject(bitmap,sizeof(bmp),&bmp)||bmp.bmBitCount!=32||!bmp.bmBits)return;
-    unsigned char* pixels=(unsigned char*)bmp.bmBits;
-    int stride=bmp.bmWidthBytes;
-    for(int y=0;y<bmp.bmHeight;y++)for(int x=0;x<bmp.bmWidth;x++) {
-        unsigned char* p=pixels+y*stride+x*4;
-        if(p[0]==255&&p[1]==0&&p[2]==255)continue; /* transparency key */
-        unsigned char gray=(unsigned char)((p[2]*77+p[1]*150+p[0]*29)>>8);
-        p[0]=p[1]=p[2]=gray;
+    ZeroMemory(&dib,sizeof(dib));
+    if(GetObjectA(bitmap,sizeof(dib),&dib)!=sizeof(dib))return;
+    if(dib.dsBm.bmBitsPixel!=32 || !dib.dsBm.bmBits)return;
+    pixels=(BYTE*)dib.dsBm.bmBits;
+    stride=dib.dsBm.bmWidthBytes;
+    for(y=0;y<dib.dsBm.bmHeight;y++) {
+        for(x=0;x<dib.dsBm.bmWidth;x++) {
+            BYTE* pixel=pixels+y*stride+x*4;
+            BYTE luminance;
+            if(pixel[0]==255 && pixel[1]==0 && pixel[2]==255)continue;
+            luminance=(BYTE)((pixel[2]*77+pixel[1]*150+pixel[0]*29)>>8);
+            pixel[0]=luminance;
+            pixel[1]=luminance;
+            pixel[2]=luminance;
+        }
     }
 }
 static void hrobest_draw_thumbnail(HDC dc,int slot,const HroBestRow* row,int x,int y) {
