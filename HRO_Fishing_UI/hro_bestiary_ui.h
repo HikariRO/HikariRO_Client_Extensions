@@ -4,6 +4,7 @@
  */
 /* Item image loader is implemented later in ddraw.c. */
 static HBITMAP load_item_image(int item_id, const char* resource_name);
+static BOOL find_item_description(int id, char* output, int output_length);
 #define HROBEST_WM_RECORD (WM_APP + 173)
 typedef struct { int id,state,kills,lv,hp,race,element; char name[56]; int stats[12]; int drop_count; struct { int id,rate; char name[48]; } drops[12]; } HroBestRow;
 static HWND hrobest_window_;
@@ -18,6 +19,7 @@ static int hrobest_filtered_[HROBEST_MAX_SPECIES],hrobest_filtered_count_;
 static char hrobest_search_[48];
 static int hrobest_search_active_;
 static int hrobest_drop_offset_;
+static int hrobest_thumb_budget_;
 /* Catalog IDs arrive sorted. Avoid O(species^2) linear searches for
  * thousands of name, status and drop records during window opening. */
 static HroBestRow* hrobest_find_catalog(int id) {
@@ -90,6 +92,7 @@ static void hrobest_show_page(int page) {
     hrobest_drop_offset_=0;
     hrobest_reset_sprite();
     hrobest_clear_thumbs();
+    hrobest_thumb_budget_=0;
     if(hrobest_window_)InvalidateRect(hrobest_window_,NULL,TRUE);
 }
 
@@ -154,7 +157,8 @@ static void hrobest_make_gray(HBITMAP bitmap) {
 }
 static void hrobest_draw_thumbnail(HDC dc,int slot,const HroBestRow* row,int x,int y) {
     if(slot<0||slot>=24)return;
-    if(hrobest_thumb_ids_[slot]!=row->id) {
+    if(hrobest_thumb_ids_[slot]!=row->id && hrobest_thumb_budget_>0) {
+        --hrobest_thumb_budget_;
         if(hrobest_thumbs_[slot])DeleteObject(hrobest_thumbs_[slot]);
         hrobest_thumbs_[slot]=hrobest_load_sprite_bitmap(row->id,row->name);
         if(row->state==0)hrobest_make_gray(hrobest_thumbs_[slot]);
@@ -427,6 +431,16 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         }
         return 0;
     }
+    if(msg==WM_TIMER && w==173) {
+        int pending=0;
+        for(int i=0;i<hrobest_count_;i++)
+            if(hrobest_thumb_ids_[i]!=hrobest_rows_[i].id) {pending=1;break;}
+        if(pending) {
+            hrobest_thumb_budget_=1;
+            InvalidateRect(hwnd,NULL,FALSE);
+        }
+        return 0;
+    }
     if(msg==WM_MOUSEACTIVATE)return MA_ACTIVATE;
     if(msg==WM_SETCURSOR) { SetCursor(LoadCursor(NULL,IDC_ARROW));return TRUE; }
     if(msg==WM_ERASEBKGND)return 1;
@@ -462,6 +476,19 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
             if(x<640) {if(hrobest_drop_offset_>0)hrobest_drop_offset_-=3;}
             else if(x>=750 && hrobest_drop_offset_+3<row->drop_count)hrobest_drop_offset_+=3;
         }
+        else if(x>=540 && x<825 && y>=410 && y<497 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
+            const HroBestRow* selected=&hrobest_rows_[hrobest_selected_];
+            int d=hrobest_drop_offset_+(y-414)/27;
+            if(selected->state==2 && d>=0 && d<selected->drop_count && (y-414)>=0 && (y-414)%27<23) {
+                char description[4096]={0},message[4608]={0},heading[96]={0};
+                const int id=selected->drops[d].id;
+                wsprintfA(heading,"%s (Item ID: %d)",selected->drops[d].name,id);
+                if(!find_item_description(id,description,sizeof(description)))
+                    lstrcpyA(description,"No client description is available for this item.");
+                wsprintfA(message,"%s\\n\\n%s",heading,description);
+                MessageBoxA(hwnd,message,"HikariRO - Item Information",MB_OK|MB_ICONINFORMATION);
+            }
+        }
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
         else if(y>=102 && y<516 && x>=32 && x<508) {
@@ -484,6 +511,7 @@ static void hrobest_create(void) {
     hrobest_window_=CreateWindowExA(WS_EX_TOOLWINDOW,wc.lpszClassName,"HikariRO Bestiary",
         WS_POPUP|WS_CLIPSIBLINGS,0,0,860,570,game_,NULL,wc.hInstance,NULL);
     if(hrobest_window_) {
+        SetTimer(hrobest_window_,173,35,NULL);
         ShowWindow(hrobest_window_,SW_HIDE);
     }
 }
