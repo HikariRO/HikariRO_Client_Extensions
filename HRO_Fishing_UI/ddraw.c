@@ -29,15 +29,35 @@ static HWND game_, hud_;
 /* The bestiary reads original SPR bytes through the existing client GRF reader.
  * Resource mapping is optional and contains paths, never duplicate images. */
 static BOOL load_client_file(const char* wanted, BYTE** output, DWORD* output_size);
-static HBITMAP hrobest_load_sprite_bitmap(int mob_id) {
+static HBITMAP hrobest_load_sprite_bitmap(int mob_id, const char* mob_name) {
     char path[256],mapfile[64];
     wsprintfA(mapfile,"data\\hro_bestiary\\%d.txt",mob_id);
     BYTE* mapping=NULL;DWORD mapping_size=0;
-    if(!load_client_file(mapfile,&mapping,&mapping_size))return NULL;
-    if(mapping_size==0 || mapping_size>240) {HeapFree(GetProcessHeap(),0,mapping);return NULL;}
-    memcpy(path,mapping,mapping_size);path[mapping_size]=0;
-    HeapFree(GetProcessHeap(),0,mapping);
-    for(DWORD i=0;i<mapping_size;i++)if(path[i]=='\r'||path[i]=='\n'){path[i]=0;break;}
+    BOOL mapped=load_client_file(mapfile,&mapping,&mapping_size);
+    if(mapped) {
+        if(mapping_size==0 || mapping_size>240) {
+            HeapFree(GetProcessHeap(),0,mapping);return NULL;
+        }
+        memcpy(path,mapping,mapping_size);path[mapping_size]=0;
+        HeapFree(GetProcessHeap(),0,mapping);
+        for(DWORD i=0;i<mapping_size;i++)
+            if(path[i]=='\\r'||path[i]=='\\n'){path[i]=0;break;}
+    } else {
+        // Standard client NPC sprites are named after the monster resource.
+        // Read directly through DATA.ini, with no per-monster mapping file.
+        char sprite[96];size_t n=0;
+        if(!mob_name || !*mob_name)return NULL;
+        for(const unsigned char* p=(const unsigned char*)mob_name;*p && n<sizeof(sprite)-1;p++) {
+            unsigned char c=*p;
+            if((c>='A'&&c<='Z'))c=(unsigned char)(c+32);
+            if((c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_')
+                sprite[n++]=(char)c;
+            else if(c==' ')sprite[n++]='_';
+            else return NULL;
+        }
+        sprite[n]=0;
+        wsprintfA(path,"data\\\\sprite\\\\npc\\\\%s.spr",sprite);
+    }
     if(!strstr(path,".spr"))return NULL;
     BYTE* raw=NULL;DWORD raw_size=0;
     if(!load_client_file(path,&raw,&raw_size))return NULL;
