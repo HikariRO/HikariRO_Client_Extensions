@@ -8,7 +8,7 @@ static BOOL find_item_description(int id, char* output, int output_length);
 #define HROBEST_WM_RECORD (WM_APP + 173)
 typedef struct { int id,state,kills,lv,hp,race,element; char name[56]; int stats[12]; int drop_count; struct { int id,rate; char name[48]; } drops[12]; } HroBestRow;
 static HWND hrobest_window_;
-static HroBestRow hrobest_rows_[24];
+static HroBestRow hrobest_rows_[12];
 static int hrobest_count_,hrobest_page_,hrobest_total_,hrobest_selected_=-1;
 static char hrobest_tail_[256];
 static int hrobest_tail_length_;
@@ -83,11 +83,11 @@ static void hrobest_filter(void) {
 static void hrobest_reset_sprite(void);
 static void hrobest_clear_thumbs(void);
 static void hrobest_show_page(int page) {
-    if(page<0 || page*24>=hrobest_filtered_count_)return;
+    if(page<0 || page*12>=hrobest_filtered_count_)return;
     hrobest_page_=page;
-    hrobest_count_=hrobest_filtered_count_-page*24;
-    if(hrobest_count_>24)hrobest_count_=24;
-    for(int i=0;i<hrobest_count_;i++)hrobest_rows_[i]=hrobest_catalog_[hrobest_filtered_[page*24+i]];
+    hrobest_count_=hrobest_filtered_count_-page*12;
+    if(hrobest_count_>12)hrobest_count_=12;
+    for(int i=0;i<hrobest_count_;i++)hrobest_rows_[i]=hrobest_catalog_[hrobest_filtered_[page*12+i]];
     hrobest_selected_=-1;
     hrobest_drop_offset_=0;
     hrobest_reset_sprite();
@@ -96,10 +96,10 @@ static void hrobest_show_page(int page) {
     if(hrobest_window_)InvalidateRect(hrobest_window_,NULL,TRUE);
 }
 
-static HBITMAP hrobest_thumbs_[24];
-static int hrobest_thumb_ids_[24];
+static HBITMAP hrobest_thumbs_[12];
+static int hrobest_thumb_ids_[12];
 static void hrobest_clear_thumbs(void) {
-    for(int i=0;i<24;i++) {
+    for(int i=0;i<12;i++) {
         if(hrobest_thumbs_[i])DeleteObject(hrobest_thumbs_[i]);
         hrobest_thumbs_[i]=NULL;hrobest_thumb_ids_[i]=0;
     }
@@ -156,7 +156,7 @@ static void hrobest_make_gray(HBITMAP bitmap) {
     }
 }
 static void hrobest_draw_thumbnail(HDC dc,int slot,const HroBestRow* row,int x,int y) {
-    if(slot<0||slot>=24)return;
+    if(slot<0||slot>=12)return;
     if(hrobest_thumb_ids_[slot]!=row->id && hrobest_thumb_budget_>0) {
         --hrobest_thumb_budget_;
         if(hrobest_thumbs_[slot])DeleteObject(hrobest_thumbs_[slot]);
@@ -231,7 +231,7 @@ static void hrobest_draw(HDC dc) {
     SelectObject(dc,title); TextOutA(dc,25,16,"HIKARIRO  /  BESTIARY",21);
     SelectObject(dc,regular);
     char label[128];
-    wsprintfA(label,"MONSTER ARCHIVE   %d / %d species   Page %d / %d",hrobest_filtered_count_,hrobest_total_,hrobest_page_+1,(hrobest_filtered_count_+23)/24);
+    wsprintfA(label,"MONSTER ARCHIVE   %d / %d species   Page %d / %d",hrobest_filtered_count_,hrobest_total_,hrobest_page_+1,(hrobest_filtered_count_+11)/12);
     TextOutA(dc,26,55,label,lstrlenA(label));
     RECT searchbox={535,45,832,79};
     HBRUSH searchbrush=CreateSolidBrush(RGB(255,255,255));
@@ -243,8 +243,8 @@ static void hrobest_draw(HDC dc) {
     RECT left={20,88,514,520},right={526,88,840,520};
     FillRect(dc,&left,card); FillRect(dc,&right,card); DeleteObject(card);
     for(int i=0;i<hrobest_count_;++i) {
-        int x=32+(i%4)*119,y=102+(i/4)*69;
-        RECT tile={x,y,x+108,y+62};
+        int x=32+(i%3)*160,y=102+(i/3)*103;
+        RECT tile={x,y,x+146,y+92};
         HBRUSH brush=CreateSolidBrush(i==hrobest_selected_?RGB(240,198,119):hrobest_rows_[i].state==2?RGB(218,229,201):hrobest_rows_[i].state==1?RGB(224,230,222):RGB(231,227,215));
         FillRect(dc,&tile,brush); DeleteObject(brush);
         Rectangle(dc,tile.left,tile.top,tile.right,tile.bottom);
@@ -254,8 +254,8 @@ static void hrobest_draw(HDC dc) {
         else wsprintfA(text,"#%d",row->id);
         TextOutA(dc,x+5,y+3,text,lstrlenA(text));
         lstrcpynA(text,row->state?row->name:"UNDISCOVERED",sizeof(text));
-        TextOutA(dc,x+5,y+44,text,lstrlenA(text)>13?13:lstrlenA(text));
-        hrobest_draw_thumbnail(dc,i,row,x+58,y+4);
+        TextOutA(dc,x+5,y+72,text,lstrlenA(text)>13?13:lstrlenA(text));
+        hrobest_draw_thumbnail(dc,i,row,x+93,y+22);
     }
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
         const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
@@ -492,7 +492,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
         else if(y>=102 && y<516 && x>=32 && x<508) {
-            int col=(x-32)/119,row=(y-102)/69,index=row*4+col;
+            int col=(x-32)/160,row=(y-102)/103,index=row*3+col;
             if(index>=0 && index<hrobest_count_){hrobest_selected_=index;hrobest_drop_offset_=0;hrobest_reset_sprite();}
         }
         if(!(x>=535 && x<=832 && y>=45 && y<=79))hrobest_search_active_=0;
@@ -529,7 +529,7 @@ static void hrobest_receive(char* data,int length) {
     for(int i=0;i+8<=total;i++) {
         if(memcmp(merged+i,marker,8))continue;
         int end=i+8;
-        while(end<total && merged[end]!=';' && end-i<240)end++;
+        while(end<total && merged[end]!=';' && end-i<120)end++;
         if(end>=total || merged[end]!=';') {incomplete=i;break;}
         int n=end-i-8;
         char* record=(char*)HeapAlloc(GetProcessHeap(),0,n+1);
