@@ -778,7 +778,17 @@ static int strip_card_chat_packets(char* data, int length) {
 			static const char album_marker[] = "HROALBUM|";
 			static const char cooking_marker[] = "HROCOOK|";
 			static const char storage_marker[] = "HROSTORAGE|";
+			static const char bestiary_marker[] = "HROBEST|";
 			int available = length - offset - marker_offset;
+            int bestiary_compared = available < 8 ? available : 8;
+            BOOL is_bestiary_packet = TRUE;
+            for (int i = 0; i < bestiary_compared; ++i) {
+                unsigned char value = packet[marker_offset + i];
+                if (i == 0 && value == 0) continue;
+                if (value != (unsigned char)bestiary_marker[i]) {
+                    is_bestiary_packet = FALSE; break;
+                }
+            }
 			int compared = available < 8 ? available : 8;
 			BOOL is_card_packet = TRUE;
 			for (int i = 0; i < compared; ++i) {
@@ -812,12 +822,13 @@ static int strip_card_chat_packets(char* data, int length) {
 			 * receive may end after H, HR or HRO; hide that incomplete prefix
 			 * while the stream tails retain it for reconstruction. */
 			if (available > 0 && available < 4 &&
-				is_card_packet && is_album_packet && is_cooking_packet && is_storage_packet)
+				is_card_packet && is_album_packet && is_cooking_packet && is_storage_packet && is_bestiary_packet)
 				packet[marker_offset] = 0;
 			if ((is_card_packet && compared >= 8) ||
 				(is_album_packet && album_compared >= 9) ||
 				(is_cooking_packet && cooking_compared >= 8) ||
-				(is_storage_packet && storage_compared >= 11)) {
+				(is_storage_packet && storage_compared >= 11) ||
+                (is_bestiary_packet && bestiary_compared >= 8)) {
 				int present = length - offset;
 				if (present >= packet_length) {
 					MoveMemory(data + offset, data + offset + packet_length,
