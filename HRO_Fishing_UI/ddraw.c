@@ -57,7 +57,7 @@ static HBITMAP hrobest_load_sprite_bitmap(int mob_id, const char* mob_name) {
             else return NULL;
         }
         sprite[n]=0;
-        wsprintfA(path,"data\\\\sprite\\\\npc\\\\%s.spr",sprite);
+        wsprintfA(path,"data\\sprite\\npc\\%s.spr",sprite);
     }
     if(!strstr(path,".spr"))return NULL;
     BYTE* raw=NULL;DWORD raw_size=0;
