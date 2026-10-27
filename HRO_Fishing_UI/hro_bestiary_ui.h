@@ -12,13 +12,43 @@ static int hrobest_tail_length_;
 #define HROBEST_MAX_SPECIES 12000
 static HroBestRow hrobest_catalog_[HROBEST_MAX_SPECIES];
 static int hrobest_catalog_count_;
+static int hrobest_filtered_[HROBEST_MAX_SPECIES],hrobest_filtered_count_;
+static char hrobest_search_[48];
+static int hrobest_search_active_;
+static int hrobest_contains(const char* name,const char* query) {
+    if(!*query)return 1;
+    for(const char* p=name;*p;p++) {
+        const char* a=p,*b=query;
+        while(*a&&*b) {
+            char x=*a,y=*b;
+            if(x>='A'&&x<='Z')x+=32;
+            if(y>='A'&&y<='Z')y+=32;
+            if(x!=y)break;
+            a++;b++;
+        }
+        if(!*b)return 1;
+    }
+    return 0;
+}
+static void hrobest_filter(void) {
+    hrobest_filtered_count_=0;
+    for(int i=0;i<hrobest_catalog_count_;i++) {
+        HroBestRow* row=&hrobest_catalog_[i];
+        char id[20];wsprintfA(id,"%d",row->id);
+        if(!hrobest_search_[0] ||
+            (row->state>0 && hrobest_contains(row->name,hrobest_search_)) ||
+            hrobest_contains(id,hrobest_search_))
+            hrobest_filtered_[hrobest_filtered_count_++]=i;
+    }
+}
+
 static void hrobest_reset_sprite(void);
 static void hrobest_show_page(int page) {
-    if(page<0 || page*24>=hrobest_catalog_count_)return;
+    if(page<0 || page*24>=hrobest_filtered_count_)return;
     hrobest_page_=page;
-    hrobest_count_=hrobest_catalog_count_-page*24;
+    hrobest_count_=hrobest_filtered_count_-page*24;
     if(hrobest_count_>24)hrobest_count_=24;
-    memcpy(hrobest_rows_,hrobest_catalog_+page*24,(size_t)hrobest_count_*sizeof(HroBestRow));
+    for(int i=0;i<hrobest_count_;i++)hrobest_rows_[i]=hrobest_catalog_[hrobest_filtered_[page*24+i]];
     hrobest_selected_=-1;
     hrobest_reset_sprite();
     if(hrobest_window_)InvalidateRect(hrobest_window_,NULL,TRUE);
@@ -68,8 +98,14 @@ static void hrobest_draw(HDC dc) {
     SelectObject(dc,title); TextOutA(dc,25,16,"HIKARIRO  /  BESTIARY",21);
     SelectObject(dc,regular);
     char label[128];
-    wsprintfA(label,"MONSTER ARCHIVE     %d species     Page %d / %d",hrobest_total_,hrobest_page_+1,(hrobest_total_+23)/24);
+    wsprintfA(label,"MONSTER ARCHIVE   %d / %d species   Page %d / %d",hrobest_filtered_count_,hrobest_total_,hrobest_page_+1,(hrobest_filtered_count_+23)/24);
     TextOutA(dc,26,55,label,lstrlenA(label));
+    RECT searchbox={535,45,832,79};
+    HBRUSH searchbrush=CreateSolidBrush(RGB(255,255,255));
+    FillRect(dc,&searchbox,searchbrush);DeleteObject(searchbrush);
+    Rectangle(dc,searchbox.left,searchbox.top,searchbox.right,searchbox.bottom);
+    wsprintfA(label,"Search: %s%s",hrobest_search_,hrobest_search_active_?"|":"");
+    TextOutA(dc,544,53,label,lstrlenA(label));
     HBRUSH card=CreateSolidBrush(RGB(251,247,235));
     RECT left={20,88,514,520},right={526,88,840,520};
     FillRect(dc,&left,card); FillRect(dc,&right,card); DeleteObject(card);
@@ -119,6 +155,8 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                 if(sscanf(data,"C|%d",&total)==1) {
                     hrobest_total_=total;
                     hrobest_catalog_count_=0;
+                    hrobest_filtered_count_=0;
+                    hrobest_search_[0]=0;
                     hrobest_page_=0;
                     hrobest_count_=0;
                     hrobest_selected_=-1;
@@ -155,7 +193,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                     }
                 }
             } else if(data[0]=='E') {
-                hrobest_show_page(0);
+                hrobest_filter();hrobest_show_page(0);
             }
             HeapFree(GetProcessHeap(),0,data);
             InvalidateRect(hwnd,NULL,TRUE);
@@ -166,8 +204,20 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
     if(msg==WM_SETCURSOR) { SetCursor(LoadCursor(NULL,IDC_ARROW));return TRUE; }
     if(msg==WM_ERASEBKGND)return 1;
     if(msg==WM_PAINT) { PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);hrobest_draw(dc);EndPaint(hwnd,&ps);return 0; }
+    if(msg==WM_CHAR && hrobest_search_active_) {
+        size_t n=strlen(hrobest_search_);
+        if(w==8 && n)hrobest_search_[n-1]=0;
+        else if(w>=32 && w<127 && n<sizeof(hrobest_search_)-1) {
+            hrobest_search_[n]=(char)w;hrobest_search_[n+1]=0;
+        } else return 0;
+        hrobest_filter();
+        if(hrobest_filtered_count_)hrobest_show_page(0);
+        else {hrobest_page_=0;hrobest_count_=0;hrobest_selected_=-1;}
+        InvalidateRect(hwnd,NULL,TRUE);
+        return 0;
+    }
     if(msg==WM_KEYDOWN) {
-        if(w==VK_ESCAPE)ShowWindow(hwnd,SW_HIDE);
+        if(w==VK_ESCAPE) {if(hrobest_search_active_)hrobest_search_active_=0;else ShowWindow(hwnd,SW_HIDE);}
         else if(w==VK_RIGHT || w==VK_NEXT)hrobest_request_page(hrobest_page_+1);
         else if(w==VK_LEFT || w==VK_PRIOR)hrobest_request_page(hrobest_page_-1);
         return 0;
@@ -175,7 +225,9 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
     if(msg==WM_MOUSEWHEEL) { hrobest_request_page(hrobest_page_+(GET_WHEEL_DELTA_WPARAM(w)<0?1:-1));return 0; }
     if(msg==WM_LBUTTONDOWN) {
         int x=LOWORD(l),y=HIWORD(l);
-        if(x>765 && y<48) ShowWindow(hwnd,SW_HIDE);
+        if(x>765 && y<40) ShowWindow(hwnd,SW_HIDE);
+        else if(x>=535 && x<=832 && y>=45 && y<=79)hrobest_search_active_=1;
+        else hrobest_search_active_=0;
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
         else if(y>=102 && y<516 && x>=32 && x<508) {
