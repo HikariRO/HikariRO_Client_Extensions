@@ -206,19 +206,19 @@ static POINT hrobest_to_logical(HWND hwnd,LPARAM l) {
     return pt;
 }
 static void hrobest_paint_scaled(HWND hwnd,HDC dc) {
-    RECT rc={0};GetClientRect(hwnd,&rc);
+    RECT rc={0};
+    int saved;
+    if(!GetClientRect(hwnd,&rc))return;
     int w=rc.right-rc.left,h=rc.bottom-rc.top;
     if(w<=0||h<=0)return;
-    HDC mem=CreateCompatibleDC(dc);
-    if(!mem)return;
-    HBITMAP bmp=CreateCompatibleBitmap(dc,HROBEST_DESIGN_W,HROBEST_DESIGN_H);
-    if(!bmp){DeleteDC(mem);return;}
-    HGDIOBJ old=SelectObject(mem,bmp);
-    hrobest_draw(mem);
-    SetStretchBltMode(dc,HALFTONE);
-    SetBrushOrgEx(dc,0,0,NULL);
-    StretchBlt(dc,0,0,w,h,mem,0,0,HROBEST_DESIGN_W,HROBEST_DESIGN_H,SRCCOPY);
-    SelectObject(mem,old);DeleteObject(bmp);DeleteDC(mem);
+    /* Draw directly at the target resolution: scaling a pre-rendered bitmap
+     * blurs every glyph and forces a large bitmap allocation per repaint. */
+    saved=SaveDC(dc);
+    SetMapMode(dc,MM_ANISOTROPIC);
+    SetWindowExtEx(dc,HROBEST_DESIGN_W,HROBEST_DESIGN_H,NULL);
+    SetViewportExtEx(dc,w,h,NULL);
+    hrobest_draw(dc);
+    RestoreDC(dc,saved);
 }
 static void hrobest_draw(HDC dc) {
     RECT bounds={0,0,860,570};
@@ -226,8 +226,8 @@ static void hrobest_draw(HDC dc) {
     FillRect(dc,&bounds,bg); DeleteObject(bg);
     SetBkMode(dc,TRANSPARENT);
     SetTextColor(dc,RGB(63,70,65));
-    HFONT title=CreateFontA(27,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,0,0,0,0,"Segoe UI");
-    HFONT regular=CreateFontA(17,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,0,0,"Segoe UI");
+    HFONT title=CreateFontA(27,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,"Segoe UI");
+    HFONT regular=CreateFontA(17,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,"Segoe UI");
     SelectObject(dc,title); TextOutA(dc,25,16,"HIKARIRO  /  BESTIARY",21);
     SelectObject(dc,regular);
     char label[128];
@@ -260,7 +260,7 @@ static void hrobest_draw(HDC dc) {
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
         const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
         const char* name=row->state?row->name:"UNDISCOVERED";
-        HFONT heading=CreateFontA(21,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,0,0,0,0,"Segoe UI");
+        HFONT heading=CreateFontA(21,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,"Segoe UI");
         HFONT oldfont=(HFONT)SelectObject(dc,heading);
         SetTextColor(dc,RGB(61,88,104));
         TextOutA(dc,540,101,name,lstrlenA(name));
