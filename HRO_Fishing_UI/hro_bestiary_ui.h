@@ -91,6 +91,7 @@ static void hrobest_show_page(int page) {
     hrobest_selected_=-1;
     hrobest_drop_offset_=0;
     hrobest_reset_sprite();
+    hrobest_clear_thumbs();
     hrobest_thumb_budget_=0;
     if(hrobest_window_)InvalidateRect(hrobest_window_,NULL,FALSE);
 }
@@ -98,21 +99,21 @@ static void hrobest_show_page(int page) {
 /* LRU cache survives page changes; never decode the same monster twice
  * during one client session. Missing sprites are cached too. */
 #define HROBEST_SPRITE_CACHE 192
-static struct {int id;HBITMAP bmp;unsigned int age;} hrobest_sprite_cache_[HROBEST_SPRITE_CACHE];
+static struct {int id;int state;HBITMAP bmp;unsigned int age;} hrobest_sprite_cache_[HROBEST_SPRITE_CACHE];
 static unsigned int hrobest_sprite_clock_;
 static HBITMAP hrobest_thumbs_[12];
 static int hrobest_thumb_ids_[12];
 static void hrobest_clear_thumbs(void) {
     for(int i=0;i<12;i++) {hrobest_thumbs_[i]=NULL;hrobest_thumb_ids_[i]=0;}
 }
-static int hrobest_cached_sprite(int id,HBITMAP* bitmap) {
-    for(int i=0;i<HROBEST_SPRITE_CACHE;i++)if(hrobest_sprite_cache_[i].id==id) {
+static int hrobest_cached_sprite(int id,int state,HBITMAP* bitmap) {
+    for(int i=0;i<HROBEST_SPRITE_CACHE;i++)if(hrobest_sprite_cache_[i].id==id && hrobest_sprite_cache_[i].state==state) {
         hrobest_sprite_cache_[i].age=++hrobest_sprite_clock_;
         *bitmap=hrobest_sprite_cache_[i].bmp;return 1;
     }
     return 0;
 }
-static void hrobest_store_sprite(int id,HBITMAP bitmap) {
+static void hrobest_store_sprite(int id,int state,HBITMAP bitmap) {
     int slot=-1;
     for(int i=0;i<HROBEST_SPRITE_CACHE;i++)
         if(hrobest_sprite_cache_[i].id==0) {slot=i;break;}
@@ -123,6 +124,7 @@ static void hrobest_store_sprite(int id,HBITMAP bitmap) {
         if(hrobest_sprite_cache_[slot].bmp)DeleteObject(hrobest_sprite_cache_[slot].bmp);
     }
     hrobest_sprite_cache_[slot].id=id;
+    hrobest_sprite_cache_[slot].state=state;
     hrobest_sprite_cache_[slot].bmp=bitmap;
     hrobest_sprite_cache_[slot].age=++hrobest_sprite_clock_;
 }
@@ -181,12 +183,12 @@ static void hrobest_draw_thumbnail(HDC dc,int slot,const HroBestRow* row,int x,i
     if(slot<0||slot>=12)return;
     if(hrobest_thumb_ids_[slot]!=row->id) {
         HBITMAP cached=NULL;
-        if(!hrobest_cached_sprite(row->id,&cached)) {
+        if(!hrobest_cached_sprite(row->id,row->state==0?0:1,&cached)) {
             if(hrobest_thumb_budget_<=0)return;
             --hrobest_thumb_budget_;
             cached=hrobest_load_sprite_bitmap(row->id,row->name);
             if(row->state==0)hrobest_make_gray(cached);
-            hrobest_store_sprite(row->id,cached);
+            hrobest_store_sprite(row->id,row->state==0?0:1,cached);
         }
         hrobest_thumbs_[slot]=cached;
         hrobest_thumb_ids_[slot]=row->id;
@@ -426,7 +428,17 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                 if(sscanf(data,"M|%d|%d|%d|%d|%d|%d|%d|%55[^;]",
                     &row.id,&row.state,&row.kills,&row.lv,&row.hp,&row.race,&row.element,row.name)==8) {
                     HroBestRow* found=hrobest_find_catalog(row.id);
-                    if(found)*found=row;
+                    if(found) {
+                        int previous_state=found->state;
+                        *found=row;
+                        if(previous_state!=row.state) {
+                            for(int k=0;k<hrobest_count_;k++)if(hrobest_rows_[k].id==row.id) {
+                                hrobest_rows_[k]=row;
+                                hrobest_thumb_ids_[k]=0;
+                                hrobest_thumbs_[k]=NULL;
+                            }
+                        }
+                    }
                 }
             } else if(data[0]=='S' && data[1]=='|') {
                 int id=0,v[12]={0};
