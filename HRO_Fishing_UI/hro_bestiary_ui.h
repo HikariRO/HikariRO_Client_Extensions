@@ -179,10 +179,11 @@ static void hrobest_make_gray(HBITMAP bitmap) {
 }
 static void hrobest_draw_thumbnail(HDC dc,int slot,const HroBestRow* row,int x,int y) {
     if(slot<0||slot>=12)return;
-    if(hrobest_thumb_ids_[slot]!=row->id && hrobest_thumb_budget_>0) {
-        --hrobest_thumb_budget_;
+    if(hrobest_thumb_ids_[slot]!=row->id) {
         HBITMAP cached=NULL;
         if(!hrobest_cached_sprite(row->id,&cached)) {
+            if(hrobest_thumb_budget_<=0)return;
+            --hrobest_thumb_budget_;
             cached=hrobest_load_sprite_bitmap(row->id,row->name);
             if(row->state==0)hrobest_make_gray(cached);
             hrobest_store_sprite(row->id,cached);
