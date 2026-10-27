@@ -29,6 +29,7 @@ static HWND game_, hud_;
 /* The bestiary reads original SPR bytes through the existing client GRF reader.
  * Resource mapping is optional and contains paths, never duplicate images. */
 static BOOL load_client_file(const char* wanted, BYTE** output, DWORD* output_size);
+static void log_line(const char* line);
 static HBITMAP hrobest_load_sprite_bitmap(int mob_id, const char* mob_name) {
     char path[256],mapfile[64];
     wsprintfA(mapfile,"data\\hro_bestiary\\%d.txt",mob_id);
@@ -62,9 +63,7 @@ static HBITMAP hrobest_load_sprite_bitmap(int mob_id, const char* mob_name) {
     BYTE* raw=NULL;DWORD raw_size=0;
     if(!load_client_file(path,&raw,&raw_size)) {
         char diagnostic[320];wsprintfA(diagnostic,"Bestiary SPR not found in DATA.ini GRFs: %s",path);
-        /* forward declaration for bestiary diagnostics */
-static void log_line(const char* message);
-log_line(diagnostic);return NULL;
+        log_line(diagnostic);return NULL;
     }
     HroSprFile spr={0};
     int valid=hro_spr_decode(raw,raw_size,&spr);
