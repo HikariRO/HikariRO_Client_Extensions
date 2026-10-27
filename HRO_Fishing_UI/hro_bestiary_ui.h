@@ -328,13 +328,24 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                     cursor=(*next==',')?next+1:next;
                 }
             } else if(data[0]=='N' && data[1]=='|') {
-                int id=0;char resource[56]={0};
-                if(sscanf(data,"N|%d|%55[^;]",&id,resource)==2) {
-                    for(int i=0;i<hrobest_catalog_count_;i++)
-                        if(hrobest_catalog_[i].id==id && hrobest_catalog_[i].state==0) {
-                            lstrcpynA(hrobest_catalog_[i].name,resource,sizeof(hrobest_catalog_[i].name));
-                            break;
-                        }
+                const char* cursor=data+2;
+                while(*cursor && *cursor!=';') {
+                    char* next=NULL;
+                    unsigned long id=strtoul(cursor,&next,10);
+                    if(next==cursor || *next!=':')break;
+                    cursor=next+1;
+                    const char* end=strchr(cursor,',');
+                    if(!end)break;
+                    int len=(int)(end-cursor);
+                    if(len>0 && len<56) {
+                        for(int i=0;i<hrobest_catalog_count_;i++)
+                            if(hrobest_catalog_[i].id==(int)id && hrobest_catalog_[i].state==0) {
+                                memcpy(hrobest_catalog_[i].name,cursor,len);
+                                hrobest_catalog_[i].name[len]=0;
+                                break;
+                            }
+                    }
+                    cursor=end+1;
                 }
             } else if(data[0]=='M' && data[1]=='|') {
                 HroBestRow row={0};
