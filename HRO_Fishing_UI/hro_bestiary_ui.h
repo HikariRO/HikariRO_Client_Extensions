@@ -122,6 +122,42 @@ static void hrobest_request_page(int page) {
     hrobest_show_page(page);
 }
 
+static void hrobest_draw(HDC dc);
+/* Render at a resolution-independent logical size, and map mouse hits back. */
+#define HROBEST_DESIGN_W 860
+#define HROBEST_DESIGN_H 570
+static void hrobest_fit_to_game(HWND hwnd) {
+    if(!game_ || !IsWindow(game_))return;
+    RECT client={0};
+    if(!GetClientRect(game_,&client))return;
+    POINT origin={0,0};
+    ClientToScreen(game_,&origin);
+    int w=client.right-client.left,h=client.bottom-client.top;
+    if(w>0 && h>0)SetWindowPos(hwnd,HWND_TOP,origin.x,origin.y,w,h,SWP_NOACTIVATE);
+}
+static POINT hrobest_to_logical(HWND hwnd,LPARAM l) {
+    RECT rc={0};GetClientRect(hwnd,&rc);
+    int w=rc.right-rc.left,h=rc.bottom-rc.top;
+    POINT pt={GET_X_LPARAM(l),GET_Y_LPARAM(l)};
+    if(w>0)pt.x=(int)((long long)pt.x*HROBEST_DESIGN_W/w);
+    if(h>0)pt.y=(int)((long long)pt.y*HROBEST_DESIGN_H/h);
+    return pt;
+}
+static void hrobest_paint_scaled(HWND hwnd,HDC dc) {
+    RECT rc={0};GetClientRect(hwnd,&rc);
+    int w=rc.right-rc.left,h=rc.bottom-rc.top;
+    if(w<=0||h<=0)return;
+    HDC mem=CreateCompatibleDC(dc);
+    if(!mem)return;
+    HBITMAP bmp=CreateCompatibleBitmap(dc,HROBEST_DESIGN_W,HROBEST_DESIGN_H);
+    if(!bmp){DeleteDC(mem);return;}
+    HGDIOBJ old=SelectObject(mem,bmp);
+    hrobest_draw(mem);
+    SetStretchBltMode(dc,HALFTONE);
+    SetBrushOrgEx(dc,0,0,NULL);
+    StretchBlt(dc,0,0,w,h,mem,0,0,HROBEST_DESIGN_W,HROBEST_DESIGN_H,SRCCOPY);
+    SelectObject(mem,old);DeleteObject(bmp);DeleteDC(mem);
+}
 static void hrobest_draw(HDC dc) {
     RECT bounds={0,0,860,570};
     HBRUSH bg=CreateSolidBrush(RGB(220,231,232));
@@ -252,12 +288,8 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                     hrobest_selected_=-1;
                     hrobest_reset_sprite();
                     if(!IsWindowVisible(hwnd)) {
-                        RECT game_rect;
-                        if(game_ && GetWindowRect(game_,&game_rect)) {
-                            int gx=game_rect.left+(game_rect.right-game_rect.left-860)/2;
-                            int gy=game_rect.top+(game_rect.bottom-game_rect.top-570)/2;
-                            SetWindowPos(hwnd,HWND_TOP,gx,gy,860,570,SWP_SHOWWINDOW);
-                        } else ShowWindow(hwnd,SW_SHOWNORMAL);
+                        hrobest_fit_to_game(hwnd);
+                        ShowWindow(hwnd,SW_SHOWNORMAL);
                         SetForegroundWindow(hwnd);SetFocus(hwnd);
                     }
                 }
@@ -314,7 +346,9 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
     if(msg==WM_MOUSEACTIVATE)return MA_ACTIVATE;
     if(msg==WM_SETCURSOR) { SetCursor(LoadCursor(NULL,IDC_ARROW));return TRUE; }
     if(msg==WM_ERASEBKGND)return 1;
-    if(msg==WM_PAINT) { PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);hrobest_draw(dc);EndPaint(hwnd,&ps);return 0; }
+    if(msg==WM_PAINT) { PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);hrobest_paint_scaled(hwnd,dc);EndPaint(hwnd,&ps);return 0; }
+    if(msg==WM_SIZE || msg==WM_DISPLAYCHANGE) {InvalidateRect(hwnd,NULL,TRUE);return 0;}
+    if(msg==WM_ACTIVATE && LOWORD(w)!=WA_INACTIVE)hrobest_fit_to_game(hwnd);
     if(msg==WM_CHAR && hrobest_search_active_) {
         size_t n=strlen(hrobest_search_);
         if(w==8 && n)hrobest_search_[n-1]=0;
@@ -335,7 +369,8 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
     }
     if(msg==WM_MOUSEWHEEL) { hrobest_request_page(hrobest_page_+(GET_WHEEL_DELTA_WPARAM(w)<0?1:-1));return 0; }
     if(msg==WM_LBUTTONDOWN) {
-        int x=LOWORD(l),y=HIWORD(l);
+        POINT pt=hrobest_to_logical(hwnd,l);
+        int x=pt.x,y=pt.y;
         if(x>765 && y<40) ShowWindow(hwnd,SW_HIDE);
         else if(x>=535 && x<=832 && y>=45 && y<=79)hrobest_search_active_=1;
         else if(y>=499 && y<522 && x>=540 && x<825 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
