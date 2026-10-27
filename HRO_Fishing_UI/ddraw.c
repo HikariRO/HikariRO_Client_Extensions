@@ -68,7 +68,7 @@ static HBITMAP hrobest_load_sprite_bitmap(int mob_id, const char* mob_name) {
             char sprite[96]={0};
             const char* basename=strrchr(path,'\\');
             if(basename)lstrcpynA(sprite,basename+1,sizeof(sprite));
-            wsprintfA(path,"data\\sprite\\%s\\%s","\\xB8\\xF3\\xBD\\xBA\\xC5\\xCD",sprite);
+            wsprintfA(path,"data\\sprite\\%s\\%s","\xB8\xF3\xBD\xBA\xC5\xCD",sprite);
             if(load_client_file(path,&raw,&raw_size))goto hrobest_sprite_loaded;
         }
 
