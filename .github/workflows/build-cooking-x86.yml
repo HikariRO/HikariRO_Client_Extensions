@@ -20,6 +20,25 @@ jobs:
         run: |
           cd HRO_Fishing_UI
           cl /nologo /O2 /LD /MT /W3 ddraw.c miniz.c miniz_tdef.c miniz_tinfl.c miniz_zip.c /link /DEF:ddraw.def /OUT:..\ddraw.dll user32.lib gdi32.lib msimg32.lib ws2_32.lib
+      - name: Scan compiled DLL with Microsoft Defender
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dll = (Resolve-Path './ddraw.dll').Path
+          $defender = Get-Command Start-MpScan -ErrorAction SilentlyContinue
+          if (-not $defender) {
+            throw 'Microsoft Defender is not available on this runner; refusing to publish an unscanned DLL.'
+          }
+          Update-MpSignature -ErrorAction Stop
+          Start-MpScan -ScanType CustomScan -ScanPath $dll -ErrorAction Stop
+          $detections = @(Get-MpThreatDetection -ErrorAction Stop | Where-Object {
+            ($_.Resources -join ' ') -like '*ddraw.dll*'
+          })
+          if ($detections.Count -gt 0) {
+            $detections | Format-List | Out-String | Write-Host
+            throw 'Microsoft Defender reported a detection in ddraw.dll; artifact publication stopped.'
+          }
+          Write-Host 'Defender scan completed with no detections for ddraw.dll.'
       - name: Prepare DLL with SHA-256 manifest
         shell: pwsh
         run: |
