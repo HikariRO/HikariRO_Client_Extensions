@@ -91,18 +91,40 @@ static void hrobest_show_page(int page) {
     hrobest_selected_=-1;
     hrobest_drop_offset_=0;
     hrobest_reset_sprite();
-    hrobest_clear_thumbs();
     hrobest_thumb_budget_=0;
-    if(hrobest_window_)InvalidateRect(hrobest_window_,NULL,TRUE);
+    if(hrobest_window_)InvalidateRect(hrobest_window_,NULL,FALSE);
 }
 
+/* LRU cache survives page changes; never decode the same monster twice
+ * during one client session. Missing sprites are cached too. */
+#define HROBEST_SPRITE_CACHE 192
+static struct {int id;HBITMAP bmp;unsigned int age;} hrobest_sprite_cache_[HROBEST_SPRITE_CACHE];
+static unsigned int hrobest_sprite_clock_;
 static HBITMAP hrobest_thumbs_[12];
 static int hrobest_thumb_ids_[12];
 static void hrobest_clear_thumbs(void) {
-    for(int i=0;i<12;i++) {
-        if(hrobest_thumbs_[i])DeleteObject(hrobest_thumbs_[i]);
-        hrobest_thumbs_[i]=NULL;hrobest_thumb_ids_[i]=0;
+    for(int i=0;i<12;i++) {hrobest_thumbs_[i]=NULL;hrobest_thumb_ids_[i]=0;}
+}
+static int hrobest_cached_sprite(int id,HBITMAP* bitmap) {
+    for(int i=0;i<HROBEST_SPRITE_CACHE;i++)if(hrobest_sprite_cache_[i].id==id) {
+        hrobest_sprite_cache_[i].age=++hrobest_sprite_clock_;
+        *bitmap=hrobest_sprite_cache_[i].bmp;return 1;
     }
+    return 0;
+}
+static void hrobest_store_sprite(int id,HBITMAP bitmap) {
+    int slot=-1;
+    for(int i=0;i<HROBEST_SPRITE_CACHE;i++)
+        if(hrobest_sprite_cache_[i].id==0) {slot=i;break;}
+    if(slot<0) {
+        slot=0;
+        for(int i=1;i<HROBEST_SPRITE_CACHE;i++)
+            if(hrobest_sprite_cache_[i].age<hrobest_sprite_cache_[slot].age)slot=i;
+        if(hrobest_sprite_cache_[slot].bmp)DeleteObject(hrobest_sprite_cache_[slot].bmp);
+    }
+    hrobest_sprite_cache_[slot].id=id;
+    hrobest_sprite_cache_[slot].bmp=bitmap;
+    hrobest_sprite_cache_[slot].age=++hrobest_sprite_clock_;
 }
 static HBITMAP hrobest_sprite_;
 static int hrobest_sprite_id_=-1;
@@ -159,9 +181,13 @@ static void hrobest_draw_thumbnail(HDC dc,int slot,const HroBestRow* row,int x,i
     if(slot<0||slot>=12)return;
     if(hrobest_thumb_ids_[slot]!=row->id && hrobest_thumb_budget_>0) {
         --hrobest_thumb_budget_;
-        if(hrobest_thumbs_[slot])DeleteObject(hrobest_thumbs_[slot]);
-        hrobest_thumbs_[slot]=hrobest_load_sprite_bitmap(row->id,row->name);
-        if(row->state==0)hrobest_make_gray(hrobest_thumbs_[slot]);
+        HBITMAP cached=NULL;
+        if(!hrobest_cached_sprite(row->id,&cached)) {
+            cached=hrobest_load_sprite_bitmap(row->id,row->name);
+            if(row->state==0)hrobest_make_gray(cached);
+            hrobest_store_sprite(row->id,cached);
+        }
+        hrobest_thumbs_[slot]=cached;
         hrobest_thumb_ids_[slot]=row->id;
     }
     HBITMAP bitmap=hrobest_thumbs_[slot];
@@ -432,6 +458,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         return 0;
     }
     if(msg==WM_TIMER && w==173) {
+        if(!IsWindowVisible(hwnd))return 0;
         int pending=0;
         for(int i=0;i<hrobest_count_;i++)
             if(hrobest_thumb_ids_[i]!=hrobest_rows_[i].id) {pending=1;break;}
