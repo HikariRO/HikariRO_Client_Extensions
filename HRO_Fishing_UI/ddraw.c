@@ -62,7 +62,9 @@ static HBITMAP hrobest_load_sprite_bitmap(int mob_id, const char* mob_name) {
     BYTE* raw=NULL;DWORD raw_size=0;
     if(!load_client_file(path,&raw,&raw_size)) {
         char diagnostic[320];wsprintfA(diagnostic,"Bestiary SPR not found in DATA.ini GRFs: %s",path);
-        log_line(diagnostic);return NULL;
+        /* forward declaration for bestiary diagnostics */
+static void log_line(const char* message);
+log_line(diagnostic);return NULL;
     }
     HroSprFile spr={0};
     int valid=hro_spr_decode(raw,raw_size,&spr);
