@@ -2,6 +2,8 @@
  * Wire protocol: HROBEST|B|page|total; HROBEST|M|id|state|kills|lv|hp|race|element|name; HROBEST|E;
  * State 0 never transmits a monster name or stats.
  */
+/* Item image loader is implemented later in ddraw.c. */
+static HBITMAP load_item_image(int item_id, const char* resource_name);
 #define HROBEST_WM_RECORD (WM_APP + 173)
 typedef struct { int id,state,kills,lv,hp,race,element; char name[56]; int stats[12]; int drop_count; struct { int id,rate; char name[48]; } drops[12]; } HroBestRow;
 static HWND hrobest_window_;
@@ -16,6 +18,26 @@ static int hrobest_filtered_[HROBEST_MAX_SPECIES],hrobest_filtered_count_;
 static char hrobest_search_[48];
 static int hrobest_search_active_;
 static int hrobest_drop_offset_;
+#define HROBEST_ICON_CACHE 128
+static struct {int id;HBITMAP bitmap;int attempted;} hrobest_icons_[HROBEST_ICON_CACHE];
+static int hrobest_icon_cursor_;
+static HBITMAP hrobest_icon_for(int id) {
+    int i,slot=-1;
+    for(i=0;i<HROBEST_ICON_CACHE;i++) {
+        if(hrobest_icons_[i].attempted && hrobest_icons_[i].id==id)
+            return hrobest_icons_[i].bitmap;
+        if(!hrobest_icons_[i].attempted && slot<0)slot=i;
+    }
+    if(slot<0) {
+        slot=hrobest_icon_cursor_++%HROBEST_ICON_CACHE;
+        if(hrobest_icons_[slot].bitmap)DeleteObject(hrobest_icons_[slot].bitmap);
+    }
+    hrobest_icons_[slot].id=id;
+    hrobest_icons_[slot].attempted=1;
+    hrobest_icons_[slot].bitmap=load_item_image(id,"");
+    return hrobest_icons_[slot].bitmap;
+}
+
 static int hrobest_contains(const char* name,const char* query) {
     if(!*query)return 1;
     for(const char* p=name;*p;p++) {
@@ -268,7 +290,16 @@ static void hrobest_draw(HDC dc) {
                 HBRUSH ib=CreateSolidBrush(RGB(232,223,203));
                 FillRect(dc,&icon,ib);DeleteObject(ib);
                 Rectangle(dc,icon.left,icon.top,icon.right,icon.bottom);
-                TextOutA(dc,546,yy+1,"?",1);
+                HBITMAP itemicon=hrobest_icon_for(row->drops[d].id);
+                if(itemicon) {
+                    BITMAP ibmp={0};GetObject(itemicon,sizeof(ibmp),&ibmp);
+                    if(ibmp.bmWidth>0 && ibmp.bmHeight>0) {
+                        HDC src=CreateCompatibleDC(dc);
+                        HGDIOBJ prev=SelectObject(src,itemicon);
+                        TransparentBlt(dc,541,yy+1,19,19,src,0,0,ibmp.bmWidth,ibmp.bmHeight,RGB(255,0,255));
+                        SelectObject(src,prev);DeleteDC(src);
+                    }
+                } else TextOutA(dc,546,yy+1,"?",1);
                 char itemname[48];lstrcpynA(itemname,row->drops[d].name,sizeof(itemname));
                 for(char* p=itemname;*p;p++)if(*p=='_')*p=' ';
                 if(lstrlenA(itemname)>20)itemname[20]=0;
