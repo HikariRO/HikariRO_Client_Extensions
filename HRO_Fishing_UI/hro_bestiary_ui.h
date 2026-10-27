@@ -480,13 +480,9 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
             const HroBestRow* selected=&hrobest_rows_[hrobest_selected_];
             int d=hrobest_drop_offset_+(y-414)/27;
             if(selected->state==2 && d>=0 && d<selected->drop_count && (y-414)>=0 && (y-414)%27<23) {
-                char description[4096]={0},message[4608]={0},heading[96]={0};
-                const int id=selected->drops[d].id;
-                wsprintfA(heading,"%s (Item ID: %d)",selected->drops[d].name,id);
-                if(!find_item_description(id,description,sizeof(description)))
-                    lstrcpyA(description,"No client description is available for this item.");
-                wsprintfA(message,"%s\\n\\n%s",heading,description);
-                MessageBoxA(hwnd,message,"HikariRO - Item Information",MB_OK|MB_ICONINFORMATION);
+                /* Native item information is owned by the RO client.
+                 * Do not show a Windows MessageBox as a misleading substitute.
+                 * Keep drop selection inert until the client tooltip bridge exists. */
             }
         }
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
