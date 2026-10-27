@@ -281,7 +281,7 @@ static void hrobest_create(void) {
     wc.lpszClassName="HROBestiaryWindow";
     RegisterClassA(&wc);
     hrobest_window_=CreateWindowExA(WS_EX_TOOLWINDOW,wc.lpszClassName,"HikariRO Bestiary",
-        WS_POPUP|WS_CLIPSIBLINGS,0,0,860,570,NULL,NULL,wc.hInstance,NULL);
+        WS_POPUP|WS_CLIPSIBLINGS,0,0,860,570,game_,NULL,wc.hInstance,NULL);
     if(hrobest_window_) {
         ShowWindow(hrobest_window_,SW_HIDE);
     }
