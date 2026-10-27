@@ -261,13 +261,13 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         int x=LOWORD(l),y=HIWORD(l);
         if(x>765 && y<40) ShowWindow(hwnd,SW_HIDE);
         else if(x>=535 && x<=832 && y>=45 && y<=79)hrobest_search_active_=1;
-        else hrobest_search_active_=0;
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
         else if(y>=102 && y<516 && x>=32 && x<508) {
             int col=(x-32)/119,row=(y-102)/69,index=row*4+col;
             if(index>=0 && index<hrobest_count_){hrobest_selected_=index;hrobest_reset_sprite();}
         }
+        if(!(x>=535 && x<=832 && y>=45 && y<=79))hrobest_search_active_=0;
         InvalidateRect(hwnd,NULL,TRUE);
         return 0;
     }
