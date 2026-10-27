@@ -414,7 +414,6 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                             row->drops[d].id=item_id;row->drops[d].rate=rate;
                             lstrcpynA(row->drops[d].name,name,48);
                         }
-                        break;
                     }
                 }
             } else if(data[0]=='E') {
