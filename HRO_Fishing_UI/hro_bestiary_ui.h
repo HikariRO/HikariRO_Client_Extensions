@@ -529,7 +529,7 @@ static void hrobest_receive(char* data,int length) {
     for(int i=0;i+8<=total;i++) {
         if(memcmp(merged+i,marker,8))continue;
         int end=i+8;
-        while(end<total && merged[end]!=';' && end-i<120)end++;
+        while(end<total && merged[end]!=';' && end-i<255)end++;
         if(end>=total || merged[end]!=';') {incomplete=i;break;}
         int n=end-i-8;
         char* record=(char*)HeapAlloc(GetProcessHeap(),0,n+1);
