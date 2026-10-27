@@ -9,6 +9,20 @@ static HroBestRow hrobest_rows_[24];
 static int hrobest_count_,hrobest_page_,hrobest_total_,hrobest_selected_=-1;
 static char hrobest_tail_[256];
 static int hrobest_tail_length_;
+#define HROBEST_MAX_SPECIES 12000
+static HroBestRow hrobest_catalog_[HROBEST_MAX_SPECIES];
+static int hrobest_catalog_count_;
+static void hrobest_show_page(int page) {
+    if(page<0 || page*24>=hrobest_catalog_count_)return;
+    hrobest_page_=page;
+    hrobest_count_=hrobest_catalog_count_-page*24;
+    if(hrobest_count_>24)hrobest_count_=24;
+    memcpy(hrobest_rows_,hrobest_catalog_+page*24,(size_t)hrobest_count_*sizeof(HroBestRow));
+    hrobest_selected_=-1;
+    hrobest_reset_sprite();
+    if(hrobest_window_)InvalidateRect(hrobest_window_,NULL,TRUE);
+}
+
 static HBITMAP hrobest_sprite_;
 static int hrobest_sprite_id_=-1;
 static void hrobest_reset_sprite(void) {
@@ -38,11 +52,8 @@ static void hrobest_draw_sprite(HDC dc,int mob_id,int x,int y,int w,int h) {
     SelectObject(src,old);DeleteDC(src);
 }
 
-/* Paging is intentionally disabled until the client/server request packet
- * is implemented. Simulated keystrokes steal RO focus and can lock the UI. */
 static void hrobest_request_page(int page) {
-    (void)page;
-    MessageBeep(MB_ICONEXCLAMATION);
+    hrobest_show_page(page);
 }
 
 static void hrobest_draw(HDC dc) {
@@ -92,7 +103,8 @@ static void hrobest_draw(HDC dc) {
             TextOutA(dc,543,261,label,lstrlenA(label));
         }
     } else TextOutA(dc,543,112,"Select a monster",16);
-    TextOutA(dc,30,537,"Paging temporarily disabled",27);
+    TextOutA(dc,30,537,"< PREV",6);
+    TextOutA(dc,425,537,"NEXT >",6);
     
     TextOutA(dc,780,20,"[X]",3);
     DeleteObject(title); DeleteObject(regular);
@@ -101,33 +113,48 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
     if(msg==HROBEST_WM_RECORD) {
         char* data=(char*)l;
         if(data) {
-            if(data[0]=='B') {
-                int page=0,total=0;
-                if(sscanf(data,"B|%d|%d",&page,&total)==2) {
-                    BOOL already_open=IsWindowVisible(hwnd);
-                    hrobest_page_=page; hrobest_total_=total;
-                    hrobest_count_=0; hrobest_selected_=-1;hrobest_reset_sprite();
-                    if(!already_open) {
-                    RECT game_rect;
-                    if(game_ && GetWindowRect(game_,&game_rect)) {
-                        int gx=game_rect.left+(game_rect.right-game_rect.left-860)/2;
-                        int gy=game_rect.top+(game_rect.bottom-game_rect.top-570)/2;
-                        SetWindowPos(hwnd,HWND_TOP,gx,gy,860,570,SWP_SHOWWINDOW);
-                    } else ShowWindow(hwnd,SW_SHOWNORMAL);
-                    // Activate and focus this interactive window rather than the RO game window.
-                    SetWindowPos(hwnd,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
-                    SetWindowPos(hwnd,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE);
-                    SetForegroundWindow(hwnd);
-                    SetActiveWindow(hwnd);
-                    SetFocus(hwnd);
+            if(data[0]=='C') {
+                int total=0;
+                if(sscanf(data,"C|%d",&total)==1) {
+                    hrobest_total_=total;
+                    hrobest_catalog_count_=0;
+                    hrobest_page_=0;
+                    hrobest_count_=0;
+                    hrobest_selected_=-1;
+                    hrobest_reset_sprite();
+                    if(!IsWindowVisible(hwnd)) {
+                        RECT game_rect;
+                        if(game_ && GetWindowRect(game_,&game_rect)) {
+                            int gx=game_rect.left+(game_rect.right-game_rect.left-860)/2;
+                            int gy=game_rect.top+(game_rect.bottom-game_rect.top-570)/2;
+                            SetWindowPos(hwnd,HWND_TOP,gx,gy,860,570,SWP_SHOWWINDOW);
+                        } else ShowWindow(hwnd,SW_SHOWNORMAL);
+                        SetForegroundWindow(hwnd);SetFocus(hwnd);
+                    }
+                }
+            } else if(data[0]=='I' && data[1]=='|') {
+                const char* cursor=data+2;
+                while(*cursor && hrobest_catalog_count_<HROBEST_MAX_SPECIES) {
+                    char* next=NULL;
+                    unsigned long id=strtoul(cursor,&next,10);
+                    if(next==cursor)break;
+                    HroBestRow* row=&hrobest_catalog_[hrobest_catalog_count_++];
+                    memset(row,0,sizeof(*row));row->id=(int)id;
+                    lstrcpyA(row->name,"UNKNOWN");
+                    cursor=(*next==',')?next+1:next;
+                }
+            } else if(data[0]=='M' && data[1]=='|') {
+                HroBestRow row={0};
+                if(sscanf(data,"M|%d|%d|%d|%d|%d|%d|%d|%55[^;]",
+                    &row.id,&row.state,&row.kills,&row.lv,&row.hp,&row.race,&row.element,row.name)==8) {
+                    for(int i=0;i<hrobest_catalog_count_;i++) {
+                        if(hrobest_catalog_[i].id==row.id) {
+                            hrobest_catalog_[i]=row;break;
+                        }
                     }
                 }
             } else if(data[0]=='E') {
-                // The client window remains visible throughout page changes.
-            } else if(data[0]=='M' && hrobest_count_<24) {
-                HroBestRow row={0};
-                if(sscanf(data,"M|%d|%d|%d|%d|%d|%d|%d|%55[^;]",&row.id,&row.state,&row.kills,&row.lv,&row.hp,&row.race,&row.element,row.name)==8)
-                    hrobest_rows_[hrobest_count_++]=row;
+                hrobest_show_page(0);
             }
             HeapFree(GetProcessHeap(),0,data);
             InvalidateRect(hwnd,NULL,TRUE);
