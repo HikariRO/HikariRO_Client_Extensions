@@ -340,7 +340,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
             }
             /* Thousands of catalog records arrive together. Redrawing the full
              * scaled window for every record stalls the client and chat. */
-            const bool refresh=(data[0]=='E' || data[0]=='B');
+            int refresh=(data[0]=='E' || data[0]=='B');
             HeapFree(GetProcessHeap(),0,data);
             if(refresh)InvalidateRect(hwnd,NULL,FALSE);
         }
