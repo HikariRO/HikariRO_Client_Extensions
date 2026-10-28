@@ -29,7 +29,31 @@ jobs:
           if (-not $defender) {
             throw 'Microsoft Defender is not available on this runner; refusing to publish an unscanned DLL.'
           }
-          Update-MpSignature -ErrorAction Stop
+          # Hosted Windows runners can fail to download signatures transiently.
+          # Do not skip scanning: retry the update, then use the locally
+          # installed signatures only when they are present and recent.
+          $updated = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              Update-MpSignature -ErrorAction Stop
+              $updated = $true
+              break
+            } catch {
+              Write-Warning "Defender signature update attempt $attempt failed: $_"
+              if ($attempt -lt 3) { Start-Sleep -Seconds (10 * $attempt) }
+            }
+          }
+          $status = Get-MpComputerStatus -ErrorAction Stop
+          if (-not $status.AntivirusEnabled -or -not $status.RealTimeProtectionEnabled) {
+            throw 'Microsoft Defender antivirus or real-time protection is disabled.'
+          }
+          if (-not $updated) {
+            $age = (Get-Date) - $status.AntivirusSignatureLastUpdated
+            if (-not $status.AntivirusSignatureVersion -or $age.TotalDays -gt 7 -or $age.TotalSeconds -lt 0) {
+              throw "Defender signature update failed and installed signatures are unavailable or stale: $age"
+            }
+            Write-Warning "Signature update unavailable; scanning with installed signatures ($($status.AntivirusSignatureVersion), age $($age.TotalHours.ToString('F1')) hours)."
+          }
           Start-MpScan -ScanType CustomScan -ScanPath $dll -ErrorAction Stop
           $detections = @(Get-MpThreatDetection -ErrorAction Stop | Where-Object {
             ($_.Resources -join ' ') -like '*ddraw.dll*'
