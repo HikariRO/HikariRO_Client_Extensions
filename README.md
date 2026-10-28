@@ -1,3 +1,23 @@
+# ⛔ HikariRO Bestiary — ABANDONED EXPERIMENT / NOT FUNCTIONAL
+
+> **STOP — DO NOT INSTALL OR DISTRIBUTE `ddraw.dll` BUILT FROM THIS BRANCH.**
+>
+> **Branch:** `hro_bestiary_ui_test`
+>
+> **Status:** INCOMPLETE, NOT FUNCTIONAL, NOT APPROVED FOR USE.
+>
+> This branch contains an unfinished experimental Bestiary interface. Its visuals, background asset integration, monster sprite loading and UI behavior are not production-ready. It has known rendering/alignment defects and unresolved functional issues.
+>
+> **Never use artifacts, DLLs or source builds from this branch to update the HikariRO game client.** Do not include this branch in the launcher/Thor patcher, automatic update packages or production releases.
+>
+> **For normal HikariRO client updates, use only the separately approved stable client-extension release/branch.** Do not assume that a successful GitHub Actions build means a DLL is safe or ready to deploy.
+>
+> This branch is retained **for historical/reference purposes only**. Development is paused indefinitely. No merge into production is authorized.
+>
+> **ESPAÑOL:** Esta rama del Bestiario está **INCOMPLETA, NO FUNCIONA CORRECTAMENTE y NO DEBE USARSE**. No descargues ni distribuyas su `ddraw.dll`, ni la incluyas en el actualizador de HikariRO. El código se conserva únicamente como referencia histórica.
+
+---
+
 # HikariRO Client Extensions
 
 Custom client-side extensions used by HikariRO.
