@@ -301,9 +301,12 @@ static void hrobest_paint_scaled(HWND hwnd,HDC dc) {
     RestoreDC(dc,saved);
 }
 static void hrobest_draw(HDC dc) {
-    RECT bounds={0,0,860,570};
-    HBRUSH bg=CreateSolidBrush(RGB(42,38,65));
-    FillRect(dc,&bounds,bg); DeleteObject(bg);
+    int themed=hrobest_draw_background(dc);
+    if(!themed) {
+        RECT bounds={0,0,860,570};
+        HBRUSH bg=CreateSolidBrush(RGB(42,38,65));
+        FillRect(dc,&bounds,bg); DeleteObject(bg);
+    }
     SetBkMode(dc,TRANSPARENT);
     SetTextColor(dc,RGB(236,230,244));
     HFONT title=CreateFontA(27,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,"Segoe UI");
@@ -317,21 +320,21 @@ static void hrobest_draw(HDC dc) {
     SetTextColor(dc,RGB(236,230,244));
     RECT searchbox={535,45,832,79};
     HBRUSH searchbrush=CreateSolidBrush(RGB(237,231,247));
-    FillRect(dc,&searchbox,searchbrush);DeleteObject(searchbrush);
-    HBRUSH outline=CreateSolidBrush(RGB(151,132,183));FrameRect(dc,&searchbox,outline);DeleteObject(outline);
+    if(!themed)FillRect(dc,&searchbox,searchbrush);DeleteObject(searchbrush);
+    HBRUSH outline=CreateSolidBrush(RGB(151,132,183));if(!themed)FrameRect(dc,&searchbox,outline);DeleteObject(outline);
     SetTextColor(dc,RGB(57,46,77));
     wsprintfA(label,"Search: %s%s",hrobest_search_,hrobest_search_active_?"|":"");
     TextOutA(dc,544,53,label,lstrlenA(label));
     SetTextColor(dc,RGB(236,230,244));
     HBRUSH card=CreateSolidBrush(RGB(64,55,86));
     RECT left={20,88,514,520},right={526,88,840,520};
-    FillRect(dc,&left,card); FillRect(dc,&right,card); DeleteObject(card);
+    if(!themed) {FillRect(dc,&left,card); FillRect(dc,&right,card);} DeleteObject(card);
     for(int i=0;i<hrobest_count_;++i) {
-        int x=32+(i%4)*120,y=102+(i/4)*137;
-        RECT tile={x,y,x+110,y+125};
+        int x=(themed?28:32)+(i%4)*120,y=(themed?142:102)+(i/4)*(themed?121:137);
+        RECT tile={x,y,x+108,y+(themed?112:125)};
         HBRUSH brush=CreateSolidBrush(i==hrobest_selected_?RGB(134,110,180):hrobest_rows_[i].state==2?RGB(76,104,101):hrobest_rows_[i].state==1?RGB(83,79,112):RGB(82,73,107));
-        FillRect(dc,&tile,brush); DeleteObject(brush);
-        HBRUSH tileedge=CreateSolidBrush(RGB(162,145,191));FrameRect(dc,&tile,tileedge);DeleteObject(tileedge);
+        if(!themed)FillRect(dc,&tile,brush); DeleteObject(brush);
+        HBRUSH tileedge=CreateSolidBrush(RGB(162,145,191));if(!themed || i==hrobest_selected_)FrameRect(dc,&tile,tileedge);DeleteObject(tileedge);
         const HroBestRow* row=&hrobest_rows_[i];
         char text[80];
         if(row->state==0) lstrcpyA(text,"???");
@@ -340,9 +343,9 @@ static void hrobest_draw(HDC dc) {
         TextOutA(dc,x+5,y+3,text,lstrlenA(text));
         SetTextColor(dc,RGB(244,240,248));
         lstrcpynA(text,row->state?row->name:"UNDISCOVERED",sizeof(text));
-        TextOutA(dc,x+5,y+103,text,lstrlenA(text)>10?10:lstrlenA(text));
+        TextOutA(dc,x+5,y+(themed?92:103),text,lstrlenA(text)>10?10:lstrlenA(text));
         SetTextColor(dc,RGB(236,230,244));
-        hrobest_draw_thumbnail(dc,i,row,x+33,y+43);
+        hrobest_draw_thumbnail(dc,i,row,x+33,y+(themed?33:43));
     }
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
         const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
@@ -387,7 +390,7 @@ static void hrobest_draw(HDC dc) {
             const char* tabnames[]={"DROPS","STATS","LOCATION"};
             for(int t=0;t<3;t++) {
                 HBRUSH tabbrush=CreateSolidBrush(t==hrobest_tab_?RGB(155,125,193):RGB(81,70,115));
-                FillRect(dc,&tabrects[t],tabbrush);DeleteObject(tabbrush);
+                if(!themed)FillRect(dc,&tabrects[t],tabbrush);DeleteObject(tabbrush);
                 SetTextColor(dc,RGB(250,239,220));
                 TextOutA(dc,tabrects[t].left+8,370,tabnames[t],lstrlenA(tabnames[t]));
             }
@@ -445,7 +448,7 @@ static void hrobest_draw(HDC dc) {
     {
         RECT prev={24,530,122,560},next={408,530,510,560},close={770,12,834,43};
         HBRUSH button=CreateSolidBrush(RGB(121,96,171));
-        FillRect(dc,&prev,button);FillRect(dc,&next,button);FillRect(dc,&close,button);
+        if(!themed){FillRect(dc,&prev,button);FillRect(dc,&next,button);FillRect(dc,&close,button);}
         DeleteObject(button);
         SetTextColor(dc,RGB(255,245,219));
         TextOutA(dc,40,536,"< PREV",6);
@@ -632,7 +635,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
         else if(y>=102 && y<516 && x>=32 && x<508) {
-            int col=(x-32)/120,row=(y-102)/137,index=row*4+col;
+            int col=(x-28)/120,row=(y-142)/121,index=row*4+col;
             if(index>=0 && index<hrobest_count_){hrobest_selected_=index;hrobest_drop_offset_=0;hrobest_reset_sprite();}
         }
         if(!(x>=535 && x<=832 && y>=45 && y<=79))hrobest_search_active_=0;
