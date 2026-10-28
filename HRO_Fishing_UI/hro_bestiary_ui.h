@@ -251,39 +251,46 @@ static void hrobest_paint_scaled(HWND hwnd,HDC dc) {
 }
 static void hrobest_draw(HDC dc) {
     RECT bounds={0,0,860,570};
-    HBRUSH bg=CreateSolidBrush(RGB(220,231,232));
+    HBRUSH bg=CreateSolidBrush(RGB(42,38,65));
     FillRect(dc,&bounds,bg); DeleteObject(bg);
     SetBkMode(dc,TRANSPARENT);
-    SetTextColor(dc,RGB(63,70,65));
+    SetTextColor(dc,RGB(236,230,244));
     HFONT title=CreateFontA(27,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,"Segoe UI");
     HFONT regular=CreateFontA(17,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,"Segoe UI");
     SelectObject(dc,title); TextOutA(dc,25,16,"HIKARIRO  /  BESTIARY",21);
     SelectObject(dc,regular);
     char label[128];
     wsprintfA(label,"MONSTER ARCHIVE   %d / %d species   Page %d / %d",hrobest_filtered_count_,hrobest_total_,hrobest_page_+1,(hrobest_filtered_count_+11)/12);
+    SetTextColor(dc,RGB(206,192,230));
     TextOutA(dc,26,55,label,lstrlenA(label));
+    SetTextColor(dc,RGB(236,230,244));
     RECT searchbox={535,45,832,79};
-    HBRUSH searchbrush=CreateSolidBrush(RGB(255,255,255));
+    HBRUSH searchbrush=CreateSolidBrush(RGB(237,231,247));
     FillRect(dc,&searchbox,searchbrush);DeleteObject(searchbrush);
-    Rectangle(dc,searchbox.left,searchbox.top,searchbox.right,searchbox.bottom);
+    HBRUSH outline=CreateSolidBrush(RGB(151,132,183));FrameRect(dc,&searchbox,outline);DeleteObject(outline);
+    SetTextColor(dc,RGB(57,46,77));
     wsprintfA(label,"Search: %s%s",hrobest_search_,hrobest_search_active_?"|":"");
     TextOutA(dc,544,53,label,lstrlenA(label));
-    HBRUSH card=CreateSolidBrush(RGB(251,247,235));
+    SetTextColor(dc,RGB(236,230,244));
+    HBRUSH card=CreateSolidBrush(RGB(64,55,86));
     RECT left={20,88,514,520},right={526,88,840,520};
     FillRect(dc,&left,card); FillRect(dc,&right,card); DeleteObject(card);
     for(int i=0;i<hrobest_count_;++i) {
         int x=32+(i%3)*160,y=102+(i/3)*103;
         RECT tile={x,y,x+146,y+92};
-        HBRUSH brush=CreateSolidBrush(i==hrobest_selected_?RGB(240,198,119):hrobest_rows_[i].state==2?RGB(218,229,201):hrobest_rows_[i].state==1?RGB(224,230,222):RGB(231,227,215));
+        HBRUSH brush=CreateSolidBrush(i==hrobest_selected_?RGB(134,110,180):hrobest_rows_[i].state==2?RGB(76,104,101):hrobest_rows_[i].state==1?RGB(83,79,112):RGB(82,73,107));
         FillRect(dc,&tile,brush); DeleteObject(brush);
-        Rectangle(dc,tile.left,tile.top,tile.right,tile.bottom);
+        HBRUSH tileedge=CreateSolidBrush(RGB(162,145,191));FrameRect(dc,&tile,tileedge);DeleteObject(tileedge);
         const HroBestRow* row=&hrobest_rows_[i];
         char text[80];
         if(row->state==0) lstrcpyA(text,"???");
         else wsprintfA(text,"#%d",row->id);
+        SetTextColor(dc,RGB(253,224,172));
         TextOutA(dc,x+5,y+3,text,lstrlenA(text));
+        SetTextColor(dc,RGB(244,240,248));
         lstrcpynA(text,row->state?row->name:"UNDISCOVERED",sizeof(text));
         TextOutA(dc,x+5,y+72,text,lstrlenA(text)>13?13:lstrlenA(text));
+        SetTextColor(dc,RGB(236,230,244));
         hrobest_draw_thumbnail(dc,i,row,x+93,y+22);
     }
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
@@ -291,10 +298,10 @@ static void hrobest_draw(HDC dc) {
         const char* name=row->state?row->name:"UNDISCOVERED";
         HFONT heading=CreateFontA(21,0,0,0,FW_BOLD,0,0,0,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,"Segoe UI");
         HFONT oldfont=(HFONT)SelectObject(dc,heading);
-        SetTextColor(dc,RGB(61,88,104));
+        SetTextColor(dc,RGB(255,227,168));
         TextOutA(dc,540,101,name,lstrlenA(name));
         SelectObject(dc,oldfont);DeleteObject(heading);
-        SetTextColor(dc,RGB(63,70,65));
+        SetTextColor(dc,RGB(236,230,244));
         if(row->state==0)lstrcpyA(label,"Not discovered");
         else if(row->state==1)lstrcpyA(label,"Discovered - defeat to unlock");
         else wsprintfA(label,"Lv. %d    Defeated: %d",row->lv,row->kills);
@@ -310,11 +317,11 @@ static void hrobest_draw(HDC dc) {
             wsprintfA(label,"HP  %d",row->hp);
             TextOutA(dc,540,190,label,lstrlenA(label));
             RECT line={540,257,825,259};
-            HBRUSH linebrush=CreateSolidBrush(RGB(207,188,150));
+            HBRUSH linebrush=CreateSolidBrush(RGB(145,124,171));
             FillRect(dc,&line,linebrush);DeleteObject(linebrush);
-            SetTextColor(dc,RGB(122,85,40));
+            SetTextColor(dc,RGB(248,210,151));
             TextOutA(dc,540,264,"COMBAT",6);
-            SetTextColor(dc,RGB(63,70,65));
+            SetTextColor(dc,RGB(236,230,244));
             wsprintfA(label,"ATK %d-%d    DEF %d    MDEF %d",row->stats[0],row->stats[1],row->stats[2],row->stats[3]);
             TextOutA(dc,540,288,label,lstrlenA(label));
             wsprintfA(label,"STR %d   AGI %d   VIT %d",row->stats[4],row->stats[5],row->stats[6]);
@@ -324,16 +331,16 @@ static void hrobest_draw(HDC dc) {
             wsprintfA(label,"EXP  Base %d   Job %d",row->stats[10],row->stats[11]);
             TextOutA(dc,540,351,label,lstrlenA(label));
             RECT separator={540,379,825,381};
-            linebrush=CreateSolidBrush(RGB(207,188,150));
+            linebrush=CreateSolidBrush(RGB(145,124,171));
             FillRect(dc,&separator,linebrush);DeleteObject(linebrush);
-            SetTextColor(dc,RGB(122,85,40));
+            SetTextColor(dc,RGB(248,210,151));
             wsprintfA(label,"DROPS   (%d items)",row->drop_count);
             TextOutA(dc,540,387,label,lstrlenA(label));
-            SetTextColor(dc,RGB(63,70,65));
+            SetTextColor(dc,RGB(236,230,244));
             for(int d=hrobest_drop_offset_;d<row->drop_count && d<hrobest_drop_offset_+3;d++) {
                 int yy=412+(d-hrobest_drop_offset_)*24;
                 RECT icon={540,yy,561,yy+20};
-                HBRUSH ib=CreateSolidBrush(RGB(232,223,203));
+                HBRUSH ib=CreateSolidBrush(RGB(111,95,134));
                 FillRect(dc,&icon,ib);DeleteObject(ib);
                 Rectangle(dc,icon.left,icon.top,icon.right,icon.bottom);
                 HBITMAP itemicon=hrobest_icon_for(row->drops[d].id);
