@@ -213,6 +213,7 @@ static void hrobest_request_page(int page) {
     hrobest_show_page(page);
 }
 
+static int hrobest_hover_badge_; /* 0 none, 1 race, 2 element */
 static void hrobest_draw(HDC dc);
 /* Render at a resolution-independent logical size, and map mouse hits back. */
 #define HROBEST_DESIGN_W 860
@@ -312,8 +313,31 @@ static void hrobest_draw(HDC dc) {
             const char* elements[]={"Neutral","Water","Earth","Fire","Wind","Poison","Holy","Shadow","Ghost","Undead"};
             const char* race=(row->race>=0&&row->race<10)?races[row->race]:"Other";
             const char* element=(row->element>=0&&row->element<10)?elements[row->element]:"Other";
-            wsprintfA(label,"%s  /  %s",race,element);
-            TextOutA(dc,540,163,label,lstrlenA(label));
+            /* Compact pictographic badges: visible type at a glance;
+             * hover provides the full race/element description. */
+            {
+                static const char* race_marks[]={"FO","UN","BR","PL","IN","FI","DE","HU","AN","DR"};
+                static const char* element_marks[]={"NE","WA","EA","FI","WI","PO","HO","SH","GH","UD"};
+                const char* race_mark=(row->race>=0&&row->race<10)?race_marks[row->race]:"??";
+                const char* elem_mark=(row->element>=0&&row->element<10)?element_marks[row->element]:"??";
+                RECT race_box={540,158,594,184},elem_box={606,158,660,184};
+                HBRUSH rb=CreateSolidBrush(RGB(93,78,133)),eb=CreateSolidBrush(RGB(57,104,133));
+                FillRect(dc,&race_box,rb);FillRect(dc,&elem_box,eb);
+                DeleteObject(rb);DeleteObject(eb);
+                SetTextColor(dc,RGB(255,233,185));
+                TextOutA(dc,554,162,race_mark,lstrlenA(race_mark));
+                TextOutA(dc,620,162,elem_mark,lstrlenA(elem_mark));
+                SetTextColor(dc,RGB(236,230,244));
+                if(hrobest_hover_badge_) {
+                    const char* value=hrobest_hover_badge_==1?race:element;
+                    const char* prefix=hrobest_hover_badge_==1?"Race: ":"Element: ";
+                    char hint[90];wsprintfA(hint,"%s%s",prefix,value);
+                    RECT hintbg={666,156,826,186};
+                    HBRUSH hb=CreateSolidBrush(RGB(29,26,47));
+                    FillRect(dc,&hintbg,hb);DeleteObject(hb);
+                    TextOutA(dc,672,162,hint,lstrlenA(hint));
+                }
+            }
             wsprintfA(label,"HP  %d",row->hp);
             TextOutA(dc,540,190,label,lstrlenA(label));
             RECT line={540,257,825,259};
@@ -373,10 +397,16 @@ static void hrobest_draw(HDC dc) {
             }
         }
     } else TextOutA(dc,543,112,"Select a monster",16);
-    TextOutA(dc,30,537,"< PREV",6);
-    TextOutA(dc,425,537,"NEXT >",6);
-    
-    TextOutA(dc,780,20,"[X]",3);
+    {
+        RECT prev={24,530,122,560},next={408,530,510,560},close={770,12,834,43};
+        HBRUSH button=CreateSolidBrush(RGB(121,96,171));
+        FillRect(dc,&prev,button);FillRect(dc,&next,button);FillRect(dc,&close,button);
+        DeleteObject(button);
+        SetTextColor(dc,RGB(255,245,219));
+        TextOutA(dc,40,536,"< PREV",6);
+        TextOutA(dc,423,536,"NEXT >",6);
+        TextOutA(dc,791,19,"[X]",3);
+    }
     DeleteObject(title); DeleteObject(regular);
 }
 static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
@@ -510,6 +540,20 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         if(w==VK_ESCAPE) {hrobest_search_active_=0;ShowWindow(hwnd,SW_HIDE);}
         else if(w==VK_RIGHT || w==VK_NEXT)hrobest_request_page(hrobest_page_+1);
         else if(w==VK_LEFT || w==VK_PRIOR)hrobest_request_page(hrobest_page_-1);
+        return 0;
+    }
+    if(msg==WM_MOUSEMOVE) {
+        POINT pt=hrobest_to_logical(hwnd,l);
+        int hovered=0;
+        if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_ &&
+           hrobest_rows_[hrobest_selected_].state==2 && pt.y>=158 && pt.y<184) {
+            if(pt.x>=540 && pt.x<594)hovered=1;
+            else if(pt.x>=606 && pt.x<660)hovered=2;
+        }
+        if(hovered!=hrobest_hover_badge_) {
+            hrobest_hover_badge_=hovered;
+            InvalidateRect(hwnd,NULL,FALSE);
+        }
         return 0;
     }
     if(msg==WM_MOUSEWHEEL) { hrobest_request_page(hrobest_page_+(GET_WHEEL_DELTA_WPARAM(w)<0?1:-1));return 0; }
