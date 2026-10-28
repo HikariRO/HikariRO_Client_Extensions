@@ -4,11 +4,12 @@ on:
   push:
     branches:
       - hro_cooking_system
-      - hro_bestiary_ui_test
   workflow_dispatch:
 
 jobs:
   build:
+    # Bestiary test branch is archived and must never produce a deployable DLL.
+    if: github.ref_name != 'hro_bestiary_ui_test'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
