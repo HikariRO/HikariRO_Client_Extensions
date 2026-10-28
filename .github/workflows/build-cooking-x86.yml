@@ -44,8 +44,14 @@ jobs:
             }
           }
           $status = Get-MpComputerStatus -ErrorAction Stop
-          if (-not $status.AntivirusEnabled -or -not $status.RealTimeProtectionEnabled) {
-            throw 'Microsoft Defender antivirus or real-time protection is disabled.'
+          # GitHub-hosted runners can report real-time protection as disabled
+          # even while on-demand scanning is available. Require antivirus
+          # availability and verify the actual custom scan below instead.
+          if (-not $status.AntivirusEnabled) {
+            throw 'Microsoft Defender antivirus engine is disabled; cannot validate the DLL.'
+          }
+          if (-not $status.RealTimeProtectionEnabled) {
+            Write-Warning 'Real-time protection is disabled on this hosted runner; requiring a successful explicit DLL scan.'
           }
           if (-not $updated) {
             $age = (Get-Date) - $status.AntivirusSignatureLastUpdated
