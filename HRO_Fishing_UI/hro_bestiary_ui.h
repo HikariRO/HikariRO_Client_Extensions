@@ -383,29 +383,30 @@ static void hrobest_draw(HDC dc) {
             }
             wsprintfA(label,"HP  %d",row->hp);
             TextOutA(dc,540,190,label,lstrlenA(label));
-            RECT line={540,257,825,259};
-            HBRUSH linebrush=CreateSolidBrush(RGB(145,124,171));
-            FillRect(dc,&line,linebrush);DeleteObject(linebrush);
-            SetTextColor(dc,RGB(248,210,151));
-            TextOutA(dc,540,264,"COMBAT",6);
+            RECT tabrects[3]={{540,365,630,393},{636,365,726,393},{732,365,824,393}};
+            const char* tabnames[]={"DROPS","STATS","LOCATION"};
+            for(int t=0;t<3;t++) {
+                HBRUSH tabbrush=CreateSolidBrush(t==hrobest_tab_?RGB(155,125,193):RGB(81,70,115));
+                FillRect(dc,&tabrects[t],tabbrush);DeleteObject(tabbrush);
+                SetTextColor(dc,RGB(250,239,220));
+                TextOutA(dc,tabrects[t].left+8,370,tabnames[t],lstrlenA(tabnames[t]));
+            }
             SetTextColor(dc,RGB(236,230,244));
-            wsprintfA(label,"ATK %d-%d    DEF %d    MDEF %d",row->stats[0],row->stats[1],row->stats[2],row->stats[3]);
-            TextOutA(dc,540,288,label,lstrlenA(label));
-            wsprintfA(label,"STR %d   AGI %d   VIT %d",row->stats[4],row->stats[5],row->stats[6]);
-            TextOutA(dc,540,309,label,lstrlenA(label));
-            wsprintfA(label,"INT %d   DEX %d   LUK %d",row->stats[7],row->stats[8],row->stats[9]);
-            TextOutA(dc,540,330,label,lstrlenA(label));
-            wsprintfA(label,"EXP  Base %d   Job %d",row->stats[10],row->stats[11]);
-            TextOutA(dc,540,351,label,lstrlenA(label));
-            RECT separator={540,379,825,381};
-            linebrush=CreateSolidBrush(RGB(145,124,171));
-            FillRect(dc,&separator,linebrush);DeleteObject(linebrush);
-            SetTextColor(dc,RGB(248,210,151));
-            wsprintfA(label,"DROPS   (%d items)",row->drop_count);
-            TextOutA(dc,540,387,label,lstrlenA(label));
-            SetTextColor(dc,RGB(236,230,244));
+            if(hrobest_tab_==1) {
+                wsprintfA(label,"ATK %d-%d    DEF %d    MDEF %d",row->stats[0],row->stats[1],row->stats[2],row->stats[3]);
+                TextOutA(dc,540,406,label,lstrlenA(label));
+                wsprintfA(label,"STR %d   AGI %d   VIT %d",row->stats[4],row->stats[5],row->stats[6]);
+                TextOutA(dc,540,433,label,lstrlenA(label));
+                wsprintfA(label,"INT %d   DEX %d   LUK %d",row->stats[7],row->stats[8],row->stats[9]);
+                TextOutA(dc,540,460,label,lstrlenA(label));
+                wsprintfA(label,"Base EXP %d   Job EXP %d",row->stats[10],row->stats[11]);
+                TextOutA(dc,540,487,label,lstrlenA(label));
+            } else if(hrobest_tab_==2) {
+                TextOutA(dc,540,410,"Locations not yet available",27);
+                TextOutA(dc,540,442,"Server map data pending.",24);
+            } else {
             for(int d=hrobest_drop_offset_;d<row->drop_count && d<hrobest_drop_offset_+3;d++) {
-                int yy=412+(d-hrobest_drop_offset_)*24;
+                int yy=402+(d-hrobest_drop_offset_)*24;
                 RECT icon={540,yy,561,yy+20};
                 HBRUSH ib=CreateSolidBrush(RGB(111,95,134));
                 FillRect(dc,&icon,ib);DeleteObject(ib);
@@ -428,15 +429,16 @@ static void hrobest_draw(HDC dc) {
                 TextOutA(dc,770,yy+1,label,lstrlenA(label));
             }
             if(row->drop_count>3) {
-                RECT nav={540,499,824,519};
+                RECT nav={540,490,824,516};
                 HBRUSH navbg=CreateSolidBrush(RGB(236,226,204));
                 FillRect(dc,&nav,navbg);DeleteObject(navbg);
                 SetTextColor(dc,RGB(90,72,47));
-                TextOutA(dc,550,501,"< PREV",6);
+                TextOutA(dc,550,495,"< PREV",6);
                 wsprintfA(label,"%d-%d / %d",hrobest_drop_offset_+1,
                     hrobest_drop_offset_+3<row->drop_count?hrobest_drop_offset_+3:row->drop_count,row->drop_count);
-                TextOutA(dc,658,501,label,lstrlenA(label));
-                TextOutA(dc,760,501,"NEXT >",6);
+                TextOutA(dc,658,495,label,lstrlenA(label));
+                TextOutA(dc,760,495,"NEXT >",6);
+            }
             }
         }
     } else TextOutA(dc,543,112,"Select a monster",16);
@@ -612,15 +614,16 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         int x=pt.x,y=pt.y;
         if(x>=765 && x<=860 && y>=0 && y<=44) {hrobest_search_active_=0;ShowWindow(hwnd,SW_HIDE);}
         else if(x>=535 && x<=832 && y>=45 && y<=79)hrobest_search_active_=1;
-        else if(y>=499 && y<522 && x>=540 && x<825 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
+        else if(y>=365 && y<394 && x>=540 && x<825)hrobest_tab_=x<634?0:x<730?1:2;
+        else if(hrobest_tab_==0 && y>=490 && y<519 && x>=540 && x<825 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
             const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
             if(x<640) {if(hrobest_drop_offset_>0)hrobest_drop_offset_-=3;}
             else if(x>=750 && hrobest_drop_offset_+3<row->drop_count)hrobest_drop_offset_+=3;
         }
-        else if(x>=540 && x<825 && y>=410 && y<497 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
+        else if(hrobest_tab_==0 && x>=540 && x<825 && y>=402 && y<486 && hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
             const HroBestRow* selected=&hrobest_rows_[hrobest_selected_];
-            int d=hrobest_drop_offset_+(y-414)/27;
-            if(selected->state==2 && d>=0 && d<selected->drop_count && (y-414)>=0 && (y-414)%27<23) {
+            int d=hrobest_drop_offset_+(y-402)/27;
+            if(selected->state==2 && d>=0 && d<selected->drop_count && (y-402)>=0 && (y-402)%27<23) {
                 /* Native item information is owned by the RO client.
                  * Do not show a Windows MessageBox as a misleading substitute.
                  * Keep drop selection inert until the client tooltip bridge exists. */
