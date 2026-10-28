@@ -102,6 +102,59 @@ static HBITMAP hrobest_load_sprite_bitmap(int mob_id, const char* mob_name) {
     return bitmap;
 }
 
+/* Bestiary artwork is loaded from loose data or the GRFs in DATA.ini.
+ * BMP is used deliberately: GDI can decode it without a PNG dependency. */
+static HBITMAP hrobest_background_;
+static int hrobest_background_attempted_;
+static HBITMAP hrobest_load_background(void) {
+    BYTE* bytes=NULL;DWORD len=0;
+    const char* resource="data\\hro_bestiary\\ui\\background.bmp";
+    if(!load_client_file(resource,&bytes,&len)) {
+        log_line("Bestiary background not found: data\\hro_bestiary\\ui\\background.bmp");
+        return NULL;
+    }
+    HBITMAP bitmap=NULL;
+    if(len>=sizeof(BITMAPFILEHEADER)+sizeof(BITMAPINFOHEADER)) {
+        BITMAPFILEHEADER fh;
+        BITMAPINFOHEADER ih;
+        memcpy(&fh,bytes,sizeof(fh));
+        memcpy(&ih,bytes+sizeof(fh),sizeof(ih));
+        if(fh.bfType==0x4d42 && ih.biSize>=sizeof(BITMAPINFOHEADER) &&
+           ih.biSize<=len-sizeof(fh) && ih.biPlanes==1 &&
+           (ih.biBitCount==24 || ih.biBitCount==32) && ih.biCompression==BI_RGB &&
+           ih.biWidth>0 && ih.biWidth<=4096 && ih.biHeight>0 && ih.biHeight<=4096 &&
+           fh.bfOffBits<len) {
+            DWORD stride=((DWORD)ih.biWidth*ih.biBitCount+31u)/32u*4u;
+            if((unsigned long long)stride*(DWORD)ih.biHeight<=len-fh.bfOffBits) {
+                HDC screen=GetDC(NULL);
+                if(screen) {
+                    bitmap=CreateDIBitmap(screen,&ih,CBM_INIT,
+                        bytes+fh.bfOffBits,(BITMAPINFO*)(bytes+sizeof(fh)),DIB_RGB_COLORS);
+                    ReleaseDC(NULL,screen);
+                }
+            }
+        }
+    }
+    HeapFree(GetProcessHeap(),0,bytes);
+    log_line(bitmap?"Bestiary background BMP loaded.":"Bestiary background BMP invalid.");
+    return bitmap;
+}
+static int hrobest_draw_background(HDC dc) {
+    if(!hrobest_background_attempted_) {
+        hrobest_background_attempted_=1;
+        hrobest_background_=hrobest_load_background();
+    }
+    if(!hrobest_background_)return 0;
+    BITMAP info={0};GetObject(hrobest_background_,sizeof(info),&info);
+    if(info.bmWidth<=0||info.bmHeight<=0)return 0;
+    HDC source=CreateCompatibleDC(dc);
+    if(!source)return 0;
+    HGDIOBJ previous=SelectObject(source,hrobest_background_);
+    StretchBlt(dc,0,0,860,570,source,0,0,info.bmWidth,info.bmHeight,SRCCOPY);
+    SelectObject(source,previous);DeleteDC(source);
+    return 1;
+}
+
 #include "hro_bestiary_ui.h"
 static HWND album_;
 static HWND card_album_;
