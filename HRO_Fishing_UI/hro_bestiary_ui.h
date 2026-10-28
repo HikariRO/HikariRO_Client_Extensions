@@ -339,9 +339,9 @@ static void hrobest_draw(HDC dc) {
         char text[80];
         if(row->state==0) lstrcpyA(text,"???");
         else wsprintfA(text,"#%d",row->id);
-        SetTextColor(dc,RGB(253,224,172));
+        SetTextColor(dc,themed?RGB(70,53,103):RGB(253,224,172));
         TextOutA(dc,x+5,y+3,text,lstrlenA(text));
-        SetTextColor(dc,RGB(244,240,248));
+        SetTextColor(dc,themed?RGB(53,46,78):RGB(244,240,248));
         lstrcpynA(text,row->state?row->name:"UNDISCOVERED",sizeof(text));
         TextOutA(dc,x+5,y+(themed?92:103),text,lstrlenA(text)>10?10:lstrlenA(text));
         SetTextColor(dc,RGB(236,230,244));
@@ -634,9 +634,9 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         }
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
-        else if(y>=102 && y<516 && x>=32 && x<508) {
+        else if(y>=142 && y<496 && x>=28 && x<496) {
             int col=(x-28)/120,row=(y-142)/121,index=row*4+col;
-            if(index>=0 && index<hrobest_count_){hrobest_selected_=index;hrobest_drop_offset_=0;hrobest_reset_sprite();}
+            if(col>=0 && col<4 && row>=0 && row<3 && (x-28)%120<108 && (y-142)%121<112 && index>=0 && index<hrobest_count_){hrobest_selected_=index;hrobest_drop_offset_=0;hrobest_reset_sprite();}
         }
         if(!(x>=535 && x<=832 && y>=45 && y<=79))hrobest_search_active_=0;
         InvalidateRect(hwnd,NULL,TRUE);
