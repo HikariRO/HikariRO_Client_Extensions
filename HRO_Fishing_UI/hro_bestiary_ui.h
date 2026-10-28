@@ -327,8 +327,8 @@ static void hrobest_draw(HDC dc) {
     RECT left={20,88,514,520},right={526,88,840,520};
     FillRect(dc,&left,card); FillRect(dc,&right,card); DeleteObject(card);
     for(int i=0;i<hrobest_count_;++i) {
-        int x=32+(i%3)*160,y=102+(i/3)*103;
-        RECT tile={x,y,x+146,y+92};
+        int x=32+(i%4)*120,y=102+(i/4)*137;
+        RECT tile={x,y,x+110,y+125};
         HBRUSH brush=CreateSolidBrush(i==hrobest_selected_?RGB(134,110,180):hrobest_rows_[i].state==2?RGB(76,104,101):hrobest_rows_[i].state==1?RGB(83,79,112):RGB(82,73,107));
         FillRect(dc,&tile,brush); DeleteObject(brush);
         HBRUSH tileedge=CreateSolidBrush(RGB(162,145,191));FrameRect(dc,&tile,tileedge);DeleteObject(tileedge);
@@ -340,9 +340,9 @@ static void hrobest_draw(HDC dc) {
         TextOutA(dc,x+5,y+3,text,lstrlenA(text));
         SetTextColor(dc,RGB(244,240,248));
         lstrcpynA(text,row->state?row->name:"UNDISCOVERED",sizeof(text));
-        TextOutA(dc,x+5,y+72,text,lstrlenA(text)>13?13:lstrlenA(text));
+        TextOutA(dc,x+5,y+103,text,lstrlenA(text)>10?10:lstrlenA(text));
         SetTextColor(dc,RGB(236,230,244));
-        hrobest_draw_thumbnail(dc,i,row,x+93,y+22);
+        hrobest_draw_thumbnail(dc,i,row,x+33,y+43);
     }
     if(hrobest_selected_>=0 && hrobest_selected_<hrobest_count_) {
         const HroBestRow* row=&hrobest_rows_[hrobest_selected_];
@@ -629,7 +629,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
         else if(y>=525 && x<145)hrobest_request_page(hrobest_page_-1);
         else if(y>=525 && x>=380 && x<525)hrobest_request_page(hrobest_page_+1);
         else if(y>=102 && y<516 && x>=32 && x<508) {
-            int col=(x-32)/160,row=(y-102)/103,index=row*3+col;
+            int col=(x-32)/120,row=(y-102)/137,index=row*4+col;
             if(index>=0 && index<hrobest_count_){hrobest_selected_=index;hrobest_drop_offset_=0;hrobest_reset_sprite();}
         }
         if(!(x>=535 && x<=832 && y>=45 && y<=79))hrobest_search_active_=0;
