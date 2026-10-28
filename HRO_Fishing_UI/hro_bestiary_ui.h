@@ -6,7 +6,7 @@
 static HBITMAP load_item_image(int item_id, const char* resource_name);
 static BOOL find_item_description(int id, char* output, int output_length);
 #define HROBEST_WM_RECORD (WM_APP + 173)
-typedef struct { int id,state,kills,lv,hp,race,element; char name[56]; int stats[12]; int drop_count; struct { int id,rate; char name[48]; } drops[12]; } HroBestRow;
+typedef struct { int id,state,kills,lv,hp,race,element,size; char name[56]; int stats[12]; int drop_count; struct { int id,rate; char name[48]; } drops[12]; } HroBestRow;
 static HWND hrobest_window_;
 static HroBestRow hrobest_rows_[12];
 static int hrobest_count_,hrobest_page_,hrobest_total_,hrobest_selected_=-1;
@@ -213,7 +213,8 @@ static void hrobest_request_page(int page) {
     hrobest_show_page(page);
 }
 
-static int hrobest_hover_badge_; /* 0 none, 1 race, 2 element */
+static int hrobest_hover_badge_; /* 0 none, 1 race, 2 element, 3 size */
+static int hrobest_tab_; /* 0 drops, 1 stats, 2 location */
 /* Compact graphic emblems, rendered with GDI rather than letter badges.
  * Race: distinct silhouette; element: distinct shape and palette. */
 static void hrobest_draw_emblem(HDC dc,int x,int y,int type,int element) {
@@ -364,9 +365,14 @@ static void hrobest_draw(HDC dc) {
             const char* element=(row->element>=0&&row->element<10)?elements[row->element]:"Other";
             hrobest_draw_emblem(dc,540,155,row->race,0);
             hrobest_draw_emblem(dc,581,155,row->element,1);
+            { int radius=row->size==0?4:row->size==1?7:10;
+              HBRUSH b=CreateSolidBrush(RGB(247,211,152));HGDIOBJ old=SelectObject(dc,b);
+              Ellipse(dc,634-radius,169-radius,634+radius,169+radius);
+              SelectObject(dc,old);DeleteObject(b); }
             if(hrobest_hover_badge_) {
-                const char* value=hrobest_hover_badge_==1?race:element;
-                const char* prefix=hrobest_hover_badge_==1?"Race: ":"Element: ";
+                const char* sizes[]={"Small","Medium","Large"};
+                const char* value=hrobest_hover_badge_==1?race:hrobest_hover_badge_==2?element:(row->size>=0&&row->size<3?sizes[row->size]:"Unknown");
+                const char* prefix=hrobest_hover_badge_==1?"Race: ":hrobest_hover_badge_==2?"Element: ":"Size: ";
                 char hint[90];wsprintfA(hint,"%s%s",prefix,value);
                 RECT hintbg={615,152,825,181};
                 HBRUSH hb=CreateSolidBrush(RGB(30,26,49));
@@ -514,6 +520,12 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
                         }
                     }
                 }
+            } else if(data[0]=='Z' && data[1]=='|') {
+                int id=0,size=0;
+                if(sscanf(data,"Z|%d|%d",&id,&size)==2) {
+                    HroBestRow* found=hrobest_find_catalog(id);
+                    if(found && found->state==2)found->size=size;
+                }
             } else if(data[0]=='S' && data[1]=='|') {
                 int id=0,v[12]={0};
                 if(sscanf(data,"S|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
@@ -586,6 +598,7 @@ static LRESULT CALLBACK hrobest_proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l) {
            hrobest_rows_[hrobest_selected_].state==2 && pt.y>=155 && pt.y<183) {
             if(pt.x>=540 && pt.x<568)hovered=1;
             else if(pt.x>=581 && pt.x<609)hovered=2;
+            else if(pt.x>=619 && pt.x<649)hovered=3;
         }
         if(hovered!=hrobest_hover_badge_) {
             hrobest_hover_badge_=hovered;
